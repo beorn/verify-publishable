@@ -156,6 +156,31 @@ describe("npm pack size inspection", () => {
 })
 
 describe("exact tarball gates", () => {
+  test("suppresses lifecycle output while creating the exact pnpm tarball", async () => {
+    const root = temporaryDirectory()
+    const destination = temporaryDirectory("verify-publishable-tarballs-")
+    const pkg = fixturePackage(root)
+    const tarballPath = join(destination, "fixture-package-1.2.3.tgz")
+    const pnpm = resolvedTool("pnpm", "pnpm", join(root, "pnpm.cjs"))
+    const commands: CommandSpec[] = []
+    const run: CommandRunner = async (spec) => {
+      commands.push(spec)
+      writeManifestTarball(tarballPath, { name: pkg.name, version: pkg.version })
+      return commandResult(JSON.stringify({ filename: tarballPath, name: pkg.name, version: pkg.version }))
+    }
+
+    await packPackage(pkg, { destination, nodePath: process.execPath, pnpm, run })
+
+    expect(commands).toEqual([
+      {
+        args: [pnpm.binPath, "pack", "--json", "--config.ignore-scripts=true", "--pack-destination", destination],
+        command: process.execPath,
+        cwd: root,
+        phase: "pnpm-pack:@fixture/package",
+      },
+    ])
+  })
+
   test("runs real pnpm pack for a private input and returns its exact packed identity", async () => {
     const root = temporaryDirectory()
     const destination = temporaryDirectory("verify-publishable-tarballs-")

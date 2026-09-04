@@ -228,7 +228,14 @@ export async function packPackage(
   const result = await (options.run ?? runCommand)({
     phase: `pnpm-pack:${pkg.name}`,
     command: options.nodePath,
-    args: [options.pnpm.binPath, "pack", "--json", "--pack-destination", options.destination],
+    args: [
+      options.pnpm.binPath,
+      "pack",
+      "--json",
+      "--config.ignore-scripts=true",
+      "--pack-destination",
+      options.destination,
+    ],
     cwd: pkg.dir,
   })
   if (result.stdout.trim() === "") throw invalidPnpmResult(pkg, "empty stdout", result.stdout)
