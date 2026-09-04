@@ -75,7 +75,7 @@ describe("npm pack size inspection", () => {
       expect.objectContaining<Partial<CommandFailure>>({
         name: "CommandFailure",
         phase: "npm-pack-dry-run:@fixture/package",
-        command: [process.execPath, npmCliPath, "pack", "--dry-run", "--json"],
+        command: [process.execPath, npmCliPath, "pack", "--dry-run", "--json", "--ignore-scripts"],
         cwd: root,
         status: 23,
         stderr: "fixture pack failure",
@@ -120,7 +120,7 @@ describe("npm pack size inspection", () => {
     ).rejects.toThrow(/@fixture\/package.*unpackedSize=101.*maxUnpackedBytes=100/is)
   })
 
-  test("returns a structured record below the cap and invokes npm without PATH lookup", async () => {
+  test("returns a structured record and suppresses lifecycle output that would corrupt npm JSON", async () => {
     const root = temporaryDirectory()
     const pkg = fixturePackage(root)
     const npmCliPath = join(root, "npm-cli.js")
@@ -146,7 +146,7 @@ describe("npm pack size inspection", () => {
     })
     expect(commands).toEqual([
       {
-        args: [npmCliPath, "pack", "--dry-run", "--json"],
+        args: [npmCliPath, "pack", "--dry-run", "--json", "--ignore-scripts"],
         command: process.execPath,
         cwd: root,
         phase: "npm-pack-dry-run:@fixture/package",

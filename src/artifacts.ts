@@ -70,7 +70,10 @@ export async function inspectNpmPack(
   const result = await (options.run ?? runCommand)({
     phase: `npm-pack-dry-run:${pkg.name}`,
     command: options.nodePath,
-    args: [options.npmCliPath, "pack", "--dry-run", "--json"],
+    // The repository build phase has already produced the artifact inputs.
+    // Suppress lifecycle scripts here so chatty prepack output cannot corrupt
+    // npm's otherwise machine-readable JSON response.
+    args: [options.npmCliPath, "pack", "--dry-run", "--json", "--ignore-scripts"],
     cwd: pkg.dir,
   })
   if (result.stdout.trim() === "") throw invalidNpmResult(pkg, "empty stdout", result.stdout)
