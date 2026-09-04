@@ -1,0 +1,28 @@
+{
+  "name": "@verify-publishable-fixture/e2e-root",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node ./build.mjs"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "verifyPublishable": {
+    "public": [
+      "@verify-publishable-fixture/e2e-public"
+    ]
+  }
+}

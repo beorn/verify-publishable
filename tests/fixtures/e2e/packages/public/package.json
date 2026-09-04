@@ -1,0 +1,24 @@
+{
+  "name": "@verify-publishable-fixture/e2e-public",
+  "version": "1.0.0",
+  "bin": {
+    "verify-publishable-e2e": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@verify-publishable-fixture/e2e-internal": "workspace:*"
+  }
+}

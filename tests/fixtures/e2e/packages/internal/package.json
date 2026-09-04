@@ -1,0 +1,16 @@
+{
+  "name": "@verify-publishable-fixture/e2e-internal",
+  "version": "1.0.0",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  }
+}

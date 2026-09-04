@@ -1,0 +1,47 @@
+{
+  "name": "verify-publishable",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fail-loud verification of the packages a repository would publish",
+  "license": "MIT",
+  "repository": "github:beorn/verify-publishable",
+  "bin": {
+    "verify-publishable": "bin/verify-publishable"
+  },
+  "files": [
+    "bin",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "type": "module",
+  "scripts": {
+    "test": "bunx --no-install --bun vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src tests",
+    "format": "oxfmt --check .",
+    "fix": "oxfmt --write . && oxlint --fix src tests",
+    "check": "bun run test && bun run typecheck && bun run lint && bun run format"
+  },
+  "dependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
+    "pnpm": "9.15.9",
+    "publint": "0.3.24",
+    "verdaccio": "6.10.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "oxfmt": "0.38.0",
+    "oxlint": "1.71.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  },
+  "engines": {
+    "bun": ">=1.3.14",
+    "node": ">=24 <25"
+  }
+}
