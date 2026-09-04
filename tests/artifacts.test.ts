@@ -120,7 +120,7 @@ describe("npm pack size inspection", () => {
     ).rejects.toThrow(/@fixture\/package.*unpackedSize=101.*maxUnpackedBytes=100/is)
   })
 
-  test("returns a structured record and suppresses lifecycle output that would corrupt npm JSON", async () => {
+  test("returns a structured record and lets npm inspect a Bun-governed package without weakening consumer installs", async () => {
     const root = temporaryDirectory()
     const pkg = fixturePackage(root)
     const npmCliPath = join(root, "npm-cli.js")
@@ -149,6 +149,7 @@ describe("npm pack size inspection", () => {
         args: [npmCliPath, "pack", "--dry-run", "--json", "--ignore-scripts"],
         command: process.execPath,
         cwd: root,
+        env: { npm_config_force: "true" },
         phase: "npm-pack-dry-run:@fixture/package",
       },
     ])

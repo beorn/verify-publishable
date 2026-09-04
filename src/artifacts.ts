@@ -75,6 +75,10 @@ export async function inspectNpmPack(
     // npm's otherwise machine-readable JSON response.
     args: [options.npmCliPath, "pack", "--dry-run", "--json", "--ignore-scripts"],
     cwd: pkg.dir,
+    // npm 11 enforces a repository's devEngines.packageManager even for this
+    // deliberately npm-owned artifact inspection. Override that authoring-tool
+    // check only for pack: consumer installs keep npm's peer resolution strict.
+    env: { npm_config_force: "true" },
   })
   if (result.stdout.trim() === "") throw invalidNpmResult(pkg, "empty stdout", result.stdout)
 
