@@ -17,6 +17,7 @@ const STOP_CONFIRM_TIMEOUT_MS = 5_000
 export interface StartRegistryOptions {
   cwd: string
   localPackageNames: string[]
+  maxBodySizeBytes?: number
   env?: NodeJS.ProcessEnv
   nodePath?: string
   selfRoot?: string
@@ -575,7 +576,12 @@ function validateLocalPackageNames(names: string[]): string[] {
   return unique.sort()
 }
 
-function registryConfig(stateRoot: string, localPackageNames: string[], debug: boolean): string {
+function registryConfig(
+  stateRoot: string,
+  localPackageNames: string[],
+  maxBodySizeBytes: number | undefined,
+  debug: boolean,
+): string {
   const localRules = localPackageNames
     .map(
       (name) => `  ${JSON.stringify(name)}:
@@ -584,8 +590,9 @@ function registryConfig(stateRoot: string, localPackageNames: string[], debug: b
     unpublish: $anonymous`,
     )
     .join("\n")
+  const bodyLimit = maxBodySizeBytes === undefined ? "" : `max_body_size: ${JSON.stringify(`${maxBodySizeBytes}b`)}\n`
   return `storage: ${JSON.stringify(join(stateRoot, "storage"))}
-auth:
+${bodyLimit}auth:
   htpasswd:
     file: ${JSON.stringify(join(stateRoot, "htpasswd"))}
     max_users: -1
@@ -619,6 +626,14 @@ function throwCleanupFailures(primary: unknown, cleanup: unknown, message: strin
 /** Resolve owned tools, create isolated state, and start a throwaway local registry. */
 export async function startRegistry(options: StartRegistryOptions): Promise<RegistryHandle> {
   const cwd = realpathSync(options.cwd)
+  if (
+    options.maxBodySizeBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxBodySizeBytes) || options.maxBodySizeBytes <= 0)
+  ) {
+    throw new Error(
+      `maxBodySizeBytes must be a positive safe integer: actual=${JSON.stringify(options.maxBodySizeBytes)}`,
+    )
+  }
   const env = options.env ?? process.env
   const port = configuredPort(env) ?? (await reserveEphemeralPort())
   const localPackageNames = validateLocalPackageNames(options.localPackageNames)
@@ -633,7 +648,7 @@ export async function startRegistry(options: StartRegistryOptions): Promise<Regi
     const url = `http://${REGISTRY_HOST}:${port}`
     mkdirSync(join(stateRoot, "storage"))
     writeFileSync(join(stateRoot, "htpasswd"), "")
-    writeFileSync(configPath, registryConfig(stateRoot, localPackageNames, debugEnabled(env)))
+    writeFileSync(configPath, registryConfig(stateRoot, localPackageNames, options.maxBodySizeBytes, debugEnabled(env)))
     writeFileSync(npmrcPath, `registry=${url}\n//${REGISTRY_HOST}:${port}/:_authToken=anonymous\n`)
     const processHandle = await startRegistryProcess({
       cwd,

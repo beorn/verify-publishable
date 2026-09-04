@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,6 +13,8 @@ import { publishTarballs } from "./publish.ts"
 import { startRegistry, type RegistryHandle } from "./registry.ts"
 import { withSandboxManifests } from "./sandbox.ts"
 import { TOOL_SPECS, findSelfPackageRoot, resolveOwnedBin } from "./tools.ts"
+
+const PUBLISH_BODY_OVERHEAD_BYTES = 1024 * 1024
 
 export interface VerifyRepositoryOptions {
   root: string
@@ -123,9 +125,19 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       })
     }
 
+    const packedSizes = await Promise.all([...packed.values()].map(({ tarballPath }) => stat(tarballPath)))
+    const largestPackedBytes = Math.max(...packedSizes.map(({ size }) => size))
+    const maxBodySizeBytes = largestPackedBytes * 2 + PUBLISH_BODY_OVERHEAD_BYTES
+    if (!Number.isSafeInteger(maxBodySizeBytes)) {
+      throw new Error(
+        `derived Verdaccio body limit is not a safe integer: largestPackedBytes=${largestPackedBytes} maxBodySizeBytes=${maxBodySizeBytes}`,
+      )
+    }
+
     registry = await startRegistry({
       cwd: root,
       localPackageNames: repository.packages.map(({ name }) => name),
+      maxBodySizeBytes,
       selfRoot,
       nodePath: host.nodePath,
     })

@@ -75,14 +75,20 @@ describe("Verdaccio registry lifecycle", () => {
    */
   test("requires Verdaccio IPC readiness and a successful ping", async () => {
     const root = temporaryDirectory()
-    const registry = await startRegistry({ cwd: root, localPackageNames: ["fixture-package"] })
+    const registry = await startRegistry({
+      cwd: root,
+      localPackageNames: ["fixture-package"],
+      maxBodySizeBytes: 42_000_000,
+    })
     registries.push(registry)
 
     expect(registry.url).toBe(`http://127.0.0.1:${registry.port}`)
     expect(registry.port).toBeGreaterThan(0)
     expect(registry.port).toBeLessThanOrEqual(65_535)
     expect(registry.pid).toBeGreaterThan(0)
-    expect(readFileSync(registry.configPath, "utf8")).toContain('"fixture-package":')
+    const config = readFileSync(registry.configPath, "utf8")
+    expect(config).toContain('"fixture-package":')
+    expect(config).toContain('max_body_size: "42000000b"')
     expect(readFileSync(registry.npmrcPath!, "utf8")).toContain(`registry=${registry.url}`)
     await expect(fetch(`${registry.url}/-/ping`).then((response) => response.ok)).resolves.toBe(true)
 
