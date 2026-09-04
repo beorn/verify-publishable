@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path"
 
 import { afterEach, describe, expect, test, vi } from "vitest"
 
+import { findHostExecutable } from "../src/preflight.ts"
 import {
   RegistryRuntimeFailure,
   RegistryStartFailure,
@@ -16,6 +17,9 @@ import {
 const roots: string[] = []
 const registries: RegistryHandle[] = []
 const servers: Server[] = []
+const configuredNodePath = process.env.NODE_FOR_TESTS
+const hostNodePath = configuredNodePath === undefined ? findHostExecutable("node") : realpathSync(configuredNodePath)
+if (hostNodePath === null) throw new Error("HOST_TOOL_MISSING: tool=node searched=PATH purpose=test-fixtures")
 
 function temporaryDirectory(): string {
   const root = mkdtempSync(join(tmpdir(), "verify-publishable-registry-test-"))
@@ -122,7 +126,7 @@ describe("Verdaccio registry lifecycle", () => {
     const root = temporaryDirectory()
     const configPath = fixture(root, "config.yaml", "storage: ./storage\n")
     const child = fixture(root, "dies.mjs", 'process.stderr.write("fixture registry exploded\\n"); process.exit(23)\n')
-    const nodePath = process.env.NODE_FOR_TESTS ?? "/usr/bin/node"
+    const nodePath = hostNodePath
 
     await expect(
       startRegistryProcess({
@@ -166,7 +170,7 @@ describe("Verdaccio registry lifecycle", () => {
         cwd: root,
         configPath,
         verdaccioBin: child,
-        nodePath: process.env.NODE_FOR_TESTS ?? "/usr/bin/node",
+        nodePath: hostNodePath,
         port,
         readinessTimeoutMs: 250,
         pollIntervalMs: 25,
@@ -218,7 +222,7 @@ server.listen(Number(rawPort), host, () => process.send?.({ verdaccio_started: t
         cwd: root,
         configPath,
         verdaccioBin: child,
-        nodePath: process.env.NODE_FOR_TESTS ?? "/usr/bin/node",
+        nodePath: hostNodePath,
         port,
         env: {
           ...process.env,
@@ -303,7 +307,7 @@ process.on("SIGTERM", () => {
       cwd: root,
       configPath,
       verdaccioBin: child,
-      nodePath: process.env.NODE_FOR_TESTS ?? "/usr/bin/node",
+      nodePath: hostNodePath,
       port,
       readinessTimeoutMs: 5_000,
       stopGraceMs: 100,
@@ -353,7 +357,7 @@ server.listen(Number(rawPort), host, () => {
       cwd: root,
       configPath,
       verdaccioBin: child,
-      nodePath: process.env.NODE_FOR_TESTS ?? "/usr/bin/node",
+      nodePath: hostNodePath,
       port,
       readinessTimeoutMs: 5_000,
     })
@@ -414,7 +418,7 @@ server.listen(Number(rawPort), host, () => {
       cwd: root,
       configPath,
       verdaccioBin: child,
-      nodePath: process.env.NODE_FOR_TESTS ?? "/usr/bin/node",
+      nodePath: hostNodePath,
       port: 48_75,
       readinessTimeoutMs: 5_000,
     }).then(

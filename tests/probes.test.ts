@@ -20,10 +20,13 @@ import { dirname, join } from "node:path"
 
 import { afterEach, describe, expect, test } from "vitest"
 
+import { findHostExecutable } from "../src/preflight.ts"
 import { ProbeFailure, probeFreshConsumer } from "../src/probes.ts"
 
 const roots: string[] = []
-const hostNodePath = realpathSync(process.env.NODE_FOR_TESTS ?? "/usr/bin/node")
+const configuredNodePath = process.env.NODE_FOR_TESTS
+const hostNodePath = configuredNodePath === undefined ? findHostExecutable("node") : realpathSync(configuredNodePath)
+if (hostNodePath === null) throw new Error("HOST_TOOL_MISSING: tool=node searched=PATH purpose=test-fixtures")
 
 interface FakeNpmOptions {
   emptyFeature?: boolean
