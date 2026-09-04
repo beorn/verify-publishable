@@ -67,6 +67,7 @@ describe("local tarball publication", () => {
     expect(run.mock.calls[0]![0].env).toMatchObject({
       NPM_CONFIG_REGISTRY: "http://127.0.0.1:4873",
       NPM_CONFIG_USERCONFIG: npmrcPath,
+      npm_config_force: "true",
     })
   })
 

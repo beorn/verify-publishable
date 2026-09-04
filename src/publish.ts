@@ -93,6 +93,9 @@ export async function publishTarballs(
           npm_config_registry: registryUrl,
           NPM_CONFIG_USERCONFIG: options.npmrcPath,
           npm_config_userconfig: options.npmrcPath,
+          // This is an npm-backed transport into the disposable local registry,
+          // even when the source repository requires Bun for authoring.
+          npm_config_force: "true",
         },
         timeoutMs: 120_000,
         ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
