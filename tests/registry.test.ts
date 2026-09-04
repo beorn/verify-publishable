@@ -87,7 +87,7 @@ describe("Verdaccio registry lifecycle", () => {
     expect(registry.port).toBeLessThanOrEqual(65_535)
     expect(registry.pid).toBeGreaterThan(0)
     const config = readFileSync(registry.configPath, "utf8")
-    expect(config).toContain('"fixture-package":')
+    expect(config).toMatch(/"fixture-package":\n(?:    .*\n)*?    proxy: npmjs/)
     expect(config).toContain('max_body_size: "42000000b"')
     expect(readFileSync(registry.npmrcPath!, "utf8")).toContain(`registry=${registry.url}`)
     await expect(fetch(`${registry.url}/-/ping`).then((response) => response.ok)).resolves.toBe(true)

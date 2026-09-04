@@ -587,7 +587,8 @@ function registryConfig(
       (name) => `  ${JSON.stringify(name)}:
     access: $anonymous
     publish: $anonymous
-    unpublish: $anonymous`,
+    unpublish: $anonymous
+    proxy: npmjs`,
     )
     .join("\n")
   const bodyLimit = maxBodySizeBytes === undefined ? "" : `max_body_size: ${JSON.stringify(`${maxBodySizeBytes}b`)}\n`
