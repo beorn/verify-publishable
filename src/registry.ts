@@ -14,9 +14,24 @@ const DEFAULT_POLL_INTERVAL_MS = 100
 const DEFAULT_STOP_GRACE_MS = 1_000
 const STOP_CONFIRM_TIMEOUT_MS = 5_000
 
+/**
+ * Which half of a verification the registry serves. `publish` keeps the local packages off the npmjs uplink, so a
+ * version that also exists upstream still publishes (Verdaccio refuses a publish whose version its proxy already
+ * sees: E409 "this package is already present"). `probe` restores the proxy on the same storage, so consumer probes
+ * still resolve prior versions of local packages (fd581bdf5c) while local storage answers for the published ones.
+ */
+export type RegistryPhase = "publish" | "probe"
+
+export const NPMJS_UPLINK_URL = "https://registry.npmjs.org/"
+
 export interface StartRegistryOptions {
   cwd: string
   localPackageNames: string[]
+  phase: RegistryPhase
+  /** Storage a `publish` phase handed off; the new registry takes ownership and removes it on stop. */
+  stateRoot?: string
+  /** The uplink every proxied rule reads; npmjs unless a test injects a fake upstream. */
+  uplinkUrl?: string
   maxBodySizeBytes?: number
   env?: NodeJS.ProcessEnv
   nodePath?: string
@@ -48,6 +63,14 @@ export interface RegistryHandle {
   readonly abortSignal: AbortSignal
   assertAlive(): void
   stop(): Promise<void>
+}
+
+export interface StartedRegistry extends RegistryHandle {
+  readonly phase: RegistryPhase
+  readonly npmrcPath: string
+  readonly stateRoot: string
+  /** Stop the process but keep its storage, for the next phase to start on; `stop()` is then a no-op. */
+  handoff(): Promise<string>
 }
 
 interface ChildExit {
@@ -581,14 +604,16 @@ function registryConfig(
   localPackageNames: string[],
   maxBodySizeBytes: number | undefined,
   debug: boolean,
+  phase: RegistryPhase,
+  uplinkUrl: string,
 ): string {
+  const localProxy = phase === "probe" ? "\n    proxy: npmjs" : ""
   const localRules = localPackageNames
     .map(
       (name) => `  ${JSON.stringify(name)}:
     access: $anonymous
     publish: $anonymous
-    unpublish: $anonymous
-    proxy: npmjs`,
+    unpublish: $anonymous${localProxy}`,
     )
     .join("\n")
   const bodyLimit = maxBodySizeBytes === undefined ? "" : `max_body_size: ${JSON.stringify(`${maxBodySizeBytes}b`)}\n`
@@ -599,7 +624,7 @@ ${bodyLimit}auth:
     max_users: -1
 uplinks:
   npmjs:
-    url: https://registry.npmjs.org/
+    url: ${JSON.stringify(uplinkUrl)}
     cache: false
     timeout: 30s
     max_fails: 3
@@ -625,7 +650,7 @@ function throwCleanupFailures(primary: unknown, cleanup: unknown, message: strin
 }
 
 /** Resolve owned tools, create isolated state, and start a throwaway local registry. */
-export async function startRegistry(options: StartRegistryOptions): Promise<RegistryHandle> {
+export async function startRegistry(options: StartRegistryOptions): Promise<StartedRegistry> {
   const cwd = realpathSync(options.cwd)
   if (
     options.maxBodySizeBytes !== undefined &&
@@ -642,14 +667,32 @@ export async function startRegistry(options: StartRegistryOptions): Promise<Regi
   const verdaccio = resolveOwnedBin(selfRoot, TOOL_SPECS.verdaccio)
   const nodePath = options.nodePath ?? resolveHostNode()
 
-  const stateRoot = mkdtempSync(join(tmpdir(), "verify-publishable-registry-"))
+  const reused = options.stateRoot
+  if (reused !== undefined && (!isAbsolute(reused) || !existsSync(join(reused, "storage")))) {
+    throw new Error(
+      `REGISTRY_STATE_MISSING: phase=${options.phase} stateRoot=${JSON.stringify(reused)} expected=<stateRoot>/storage`,
+    )
+  }
+  const stateRoot = reused ?? mkdtempSync(join(tmpdir(), "verify-publishable-registry-"))
   try {
     const configPath = join(stateRoot, "config.yaml")
     const npmrcPath = join(stateRoot, ".npmrc")
     const url = `http://${REGISTRY_HOST}:${port}`
-    mkdirSync(join(stateRoot, "storage"))
-    writeFileSync(join(stateRoot, "htpasswd"), "")
-    writeFileSync(configPath, registryConfig(stateRoot, localPackageNames, options.maxBodySizeBytes, debugEnabled(env)))
+    if (reused === undefined) {
+      mkdirSync(join(stateRoot, "storage"))
+      writeFileSync(join(stateRoot, "htpasswd"), "")
+    }
+    writeFileSync(
+      configPath,
+      registryConfig(
+        stateRoot,
+        localPackageNames,
+        options.maxBodySizeBytes,
+        debugEnabled(env),
+        options.phase,
+        options.uplinkUrl ?? NPMJS_UPLINK_URL,
+      ),
+    )
     writeFileSync(npmrcPath, `registry=${url}\n//${REGISTRY_HOST}:${port}/:_authToken=anonymous\n`)
     const processHandle = await startRegistryProcess({
       cwd,
@@ -665,8 +708,17 @@ export async function startRegistry(options: StartRegistryOptions): Promise<Regi
     let stopPromise: Promise<void> | undefined
     return {
       ...processHandle,
+      phase: options.phase,
       npmrcPath,
       stateRoot,
+      handoff: async () => {
+        if (stopPromise !== undefined) {
+          throw new Error(`REGISTRY_HANDOFF_AFTER_STOP: phase=${options.phase} stateRoot=${JSON.stringify(stateRoot)}`)
+        }
+        stopPromise = processHandle.stop()
+        await stopPromise
+        return stateRoot
+      },
       stop: () => {
         if (stopPromise !== undefined) return stopPromise
         stopPromise = (async () => {

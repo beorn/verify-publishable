@@ -11,6 +11,7 @@ import { resolveHostTools } from "./preflight.ts"
 import { probeFreshConsumer } from "./probes.ts"
 import { publishTarballs } from "./publish.ts"
 import { startRegistry, type RegistryHandle } from "./registry.ts"
+import { assertServedIntegrity, tarballIntegrity } from "./served-integrity.ts"
 import { withSandboxManifests } from "./sandbox.ts"
 import { TOOL_SPECS, findSelfPackageRoot, resolveOwnedBin } from "./tools.ts"
 
@@ -134,15 +135,16 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       )
     }
 
-    registry = await startRegistry({
+    const registryOptions = {
       cwd: root,
       localPackageNames: repository.packages.map(({ name }) => name),
       maxBodySizeBytes,
       selfRoot,
       nodePath: host.nodePath,
-    })
+    }
+    const publishRegistry = await startRegistry({ ...registryOptions, phase: "publish" })
+    registry = publishRegistry
     registry.assertAlive()
-    const npmrcPath = registryPath(registry, "npmrcPath")
     await publishTarballs(
       repository.packages.map((pkg) => {
         const tarball = packed.get(pkg.name)
@@ -152,12 +154,32 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       {
         nodePath: host.nodePath,
         pnpm: tools.pnpm,
-        registryUrl: registry.url,
-        npmrcPath,
-        abortSignal: registry.abortSignal,
+        registryUrl: publishRegistry.url,
+        npmrcPath: publishRegistry.npmrcPath,
+        abortSignal: publishRegistry.abortSignal,
       },
     )
-    registry.assertAlive()
+    publishRegistry.assertAlive()
+
+    // The probes need the npmjs proxy for prior versions of local packages; the publish could not have it.
+    const probeRegistry = await startRegistry({
+      ...registryOptions,
+      phase: "probe",
+      stateRoot: await publishRegistry.handoff(),
+    })
+    registry = probeRegistry
+    probeRegistry.assertAlive()
+    const npmrcPath = probeRegistry.npmrcPath
+    await assertServedIntegrity(
+      probeRegistry.url,
+      await Promise.all(
+        repository.packages.map(async (pkg) => {
+          const tarball = packed.get(pkg.name)
+          if (tarball === undefined) throw new Error(`PACK_ARTIFACT_MISSING: package=${pkg.name} packed=[]`)
+          return { name: pkg.name, version: pkg.version, integrity: await tarballIntegrity(tarball.tarballPath) }
+        }),
+      ),
+    )
 
     const packages: VerifiedPackageResult[] = []
     for (const pkg of repository.publicPackages) {

@@ -79,6 +79,7 @@ describe("Verdaccio registry lifecycle", () => {
       cwd: root,
       localPackageNames: ["fixture-package"],
       maxBodySizeBytes: 42_000_000,
+      phase: "probe",
     })
     registries.push(registry)
 
@@ -116,6 +117,7 @@ describe("Verdaccio registry lifecycle", () => {
         startRegistry({
           cwd: root,
           localPackageNames: ["fixture-package"],
+          phase: "probe",
           env: { ...process.env, VERDACCIO_PORT: port },
         }),
       ).rejects.toThrow(`invalid VERDACCIO_PORT=${JSON.stringify(port)}; expected an integer from 1 through 65535`)
@@ -265,6 +267,7 @@ server.listen(Number(rawPort), host, () => process.send?.({ verdaccio_started: t
     const failure = await startRegistry({
       cwd: root,
       localPackageNames: ["fixture-package"],
+      phase: "probe",
       env: { ...process.env, VERDACCIO_PORT: String(port) },
       readinessTimeoutMs: 10_000,
     }).then(

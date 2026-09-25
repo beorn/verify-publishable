@@ -52,7 +52,7 @@ The optional root configuration is strict—unknown keys and malformed values fa
 - `public`: exact asserted public-package names. Missing, extra, private, or non-public-access entries fail by name.
 - `checks`: at most one fresh-consumer check per asserted-public package. `files` are copied from the repository into the consumer, and `runner` must resolve from that consumer's `node_modules/.bin`; path escapes and missing files or runners fail.
 
-The normal phase order is build, size inspection, pnpm pack, strict Publint, ATTW's Node 16 compatibility profile (with only `cjs-resolves-to-esm` ignored), isolated publication, fresh npm install, development and production imports, declared-bin `--help`, and the optional consumer check. The same tarball bytes are checked, published, and hashed.
+The normal phase order is build, size inspection, pnpm pack, strict Publint, ATTW's Node 16 compatibility profile (with only `cjs-resolves-to-esm` ignored), isolated publication, the served-integrity check, fresh npm install, development and production imports, declared-bin `--help`, and the optional consumer check. The same tarball bytes are checked, published, and hashed. The registry runs in two phases on one storage: `publish` keeps the local packages off the npmjs uplink, so a version that is already released still publishes locally; `probe` restarts with the uplink so consumers resolve prior versions of local packages. Before any probe, every local package's served `dist.integrity` must equal its packed tarball's, or the gate refuses with `LOCAL_ARTIFACT_CONTRADICTED`, naming both hashes.
 
 ## Options and environment
 
