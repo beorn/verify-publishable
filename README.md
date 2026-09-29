@@ -57,16 +57,17 @@ The normal phase order is build, size inspection, pnpm pack, strict Publint, ATT
 ## Options and environment
 
 ```text
-verify-publishable [--no-build] [--keep]
+verify-publishable [--no-build] [--keep] [--output-dir <directory>]
 ```
 
 - `--no-build` skips the build only when the caller already built the same checkout.
 - `--keep` preserves the registry and temporary artifacts for inspection and leaves the verifier attached; stop it with Ctrl-C when finished.
+- `--output-dir` requires an existing empty directory owned by the caller. After every gate passes and the local registry stops, the verifier copies the exact checked public tarballs there. The caller removes the directory after publishing. `--keep` and `--output-dir` cannot be combined.
 - `VERDACCIO_PORT` chooses an explicit loopback port; an invalid or occupied port fails.
 - `VERDACCIO_DEBUG=1` mirrors bounded Verdaccio diagnostics to stderr.
 
 ## Output and failures
 
-Stdout contains exactly one JSON object using schema `verify-publishable/v1`. Human diagnostics, including child stdout and stderr, go to stderr. Success reports the validated Node/npm versions, build mode, exact public packages, unpacked sizes, tarball SHA-256 hashes, import specifiers, bins, and consumer-check status.
+Stdout contains exactly one JSON object using schema `verify-publishable/v1`. Human diagnostics, including child stdout and stderr, go to stderr. Success reports the validated Node/npm versions, build mode, exact public packages, unpacked sizes, tarball SHA-256 hashes, import specifiers, bins, and consumer-check status. With `--output-dir`, each public package also reports its absolute `tarballPath` and npm-form `sha512-<base64>` digest over the retained file. A failed verification leaves no file from that run in the caller's directory.
 
 Expected resources never degrade into a skip or empty success. A missing manifest, build, executable, tarball, registry, installed package, export, declaration, bin, or configured check exits nonzero and identifies the phase, command, working directory, status, and captured output where applicable.

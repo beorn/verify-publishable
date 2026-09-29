@@ -5,7 +5,17 @@
  * @consumer repositories using verifyRepository or the verify-publishable CLI
  */
 
-import { appendFileSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -41,6 +51,12 @@ function installedFixture(): string {
   const root = copyFixture()
   installFixture(root)
   return root
+}
+
+function emptyOutputDirectory(): string {
+  const outputDir = mkdtempSync(join(tmpdir(), "verify-publishable-output-"))
+  roots.push(outputDir)
+  return outputDir
 }
 
 function updatePublicManifest(root: string, update: (manifest: Record<string, unknown>) => void): void {
@@ -122,6 +138,33 @@ describe("real repository verification", () => {
     expect(readFileSync(internalManifestPath, "utf8")).toBe(internalManifestBefore)
   }, 120_000)
 
+  test("retains only fully verified tarballs in the caller's directory with npm SHA-512", async () => {
+    const root = installedFixture()
+    const outputDir = emptyOutputDirectory()
+
+    const result = await verifyRepository({ root, outputDir })
+
+    expect(result.kept).toBeUndefined()
+    const verified = result.packages[0]!
+    expect(verified.tarballPath).toMatch(new RegExp(`^${outputDir}/`, "u"))
+    expect(readdirSync(outputDir)).toHaveLength(1)
+    const bytes = readFileSync(verified.tarballPath!)
+    expect(verified.sha512).toBe(`sha512-${createHash("sha512").update(bytes).digest("base64")}`)
+    expect(verified.sha256).toBe(createHash("sha256").update(bytes).digest("hex"))
+  }, 120_000)
+
+  test("a nonempty output directory refuses before building", async () => {
+    const root = installedFixture()
+    const outputDir = emptyOutputDirectory()
+    writeFileSync(join(outputDir, "marker"), "caller data")
+
+    const failure = await captureFailure(verifyRepository({ root, outputDir }))
+
+    expect((failure as Error).message).toContain("ARTIFACT_OUTPUT_NOT_EMPTY")
+    expect(readFileSync(join(outputDir, "marker"), "utf8")).toBe("caller data")
+    expect(existsSync(join(root, "packages/public/dist/index.js"))).toBe(false)
+  }, 120_000)
+
   test("--keep reports and preserves inspectable artifacts plus the live registry", async () => {
     const root = installedFixture()
     const result = await verifyRepository({ root, keep: true })
@@ -151,17 +194,19 @@ describe("real repository verification", () => {
 
   test("Publint rejects an export target absent from the packed artifact", async () => {
     const root = installedFixture()
+    const outputDir = emptyOutputDirectory()
     updatePublicManifest(root, (manifest) => {
       manifest.exports = {
         ".": { types: "./dist/index.d.ts", import: "./dist/not-built.js" },
       }
     })
 
-    const failure = await captureFailure(verifyRepository({ root }))
+    const failure = await captureFailure(verifyRepository({ root, outputDir }))
 
     expect(failure).toBeInstanceOf(CommandFailure)
     expect(failure).toMatchObject({ phase: `publint:${PUBLIC_NAME}`, status: 1 })
     expect(commandDiagnostic(failure as CommandFailure)).toMatch(/dist\/not-built\.js|not published|does not exist/i)
+    expect(readdirSync(outputDir)).toEqual([])
   }, 120_000)
 
   test("discovery rejects an asserted-public package that remains private", async () => {

@@ -1,3 +1,5 @@
+import { resolve } from "node:path"
+
 import { CommandFailure } from "./process.ts"
 import { ProbeFailure } from "./probes.ts"
 import { RegistryRuntimeFailure, RegistryStartFailure } from "./registry.ts"
@@ -145,7 +147,22 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
   const stdout = options.stdout ?? process.stdout
   const stderr = options.stderr ?? process.stderr
   const verify = options.verify ?? verifyRepository
-  const unknown = argv.filter((argument) => !["--help", "--keep", "--no-build"].includes(argument))
+  const unknown: string[] = []
+  let outputDir: string | undefined
+  for (let index = 0; index < argv.length; index++) {
+    const argument = argv[index]!
+    if (argument === "--output-dir") {
+      const value = argv[index + 1]
+      if (value === undefined || value.startsWith("--") || outputDir !== undefined) {
+        unknown.push(argument)
+      } else {
+        outputDir = resolve(cwd, value)
+        index++
+      }
+    } else if (!["--help", "--keep", "--no-build"].includes(argument)) {
+      unknown.push(argument)
+    }
+  }
   if (unknown.length > 0) {
     const failure: FailureResult = {
       code: "USAGE",
@@ -156,7 +173,7 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
       signal: null,
       stdout: "",
       stderr: "",
-      detail: `unknown arguments: ${JSON.stringify(unknown)}; accepted=["--help","--keep","--no-build"]`,
+      detail: `unknown or incomplete arguments: ${JSON.stringify(unknown)}; accepted=["--help","--keep","--no-build","--output-dir <directory>"]`,
     }
     stderr.write(`${failure.detail}\n`)
     stdout.write(`${JSON.stringify({ schema: SCHEMA, ok: false, failures: [failure] })}\n`)
@@ -164,13 +181,18 @@ export async function runCli(options: CliOptions = {}): Promise<number> {
   }
   if (argv.includes("--help")) {
     stdout.write(
-      `${JSON.stringify({ schema: SCHEMA, ok: true, help: { usage: "verify-publishable [--no-build] [--keep]" } })}\n`,
+      `${JSON.stringify({ schema: SCHEMA, ok: true, help: { usage: "verify-publishable [--no-build] [--keep] [--output-dir <directory>]" } })}\n`,
     )
     return 0
   }
 
   try {
-    const result = await verify({ root: cwd, noBuild: argv.includes("--no-build"), keep: argv.includes("--keep") })
+    const result = await verify({
+      root: cwd,
+      noBuild: argv.includes("--no-build"),
+      keep: argv.includes("--keep"),
+      ...(outputDir === undefined ? {} : { outputDir }),
+    })
     stdout.write(`${JSON.stringify({ schema: SCHEMA, ok: true, ...result })}\n`)
     return 0
   } catch (error) {

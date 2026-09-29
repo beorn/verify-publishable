@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { inspectNpmPack, packPackage, runTarballChecks, type PackedTarball } from "./artifacts.ts"
@@ -21,6 +21,7 @@ export interface VerifyRepositoryOptions {
   root: string
   noBuild?: boolean
   keep?: boolean
+  outputDir?: string
 }
 
 export interface VerifiedPackageResult {
@@ -28,6 +29,8 @@ export interface VerifiedPackageResult {
   version: string
   unpackedSize: number
   sha256: string
+  tarballPath?: string
+  sha512?: string
   specifiers: string[]
   bins: string[]
   consumerCheckRan: boolean
@@ -53,13 +56,83 @@ async function sha256(path: string): Promise<string> {
     .digest("hex")
 }
 
-async function cleanupResources(registry: RegistryHandle | undefined, artifactRoot: string): Promise<unknown[]> {
+async function requireEmptyOutputDirectory(path: string): Promise<string> {
+  let directory: string
+  try {
+    directory = await realpath(path)
+  } catch (error) {
+    throw new Error(`ARTIFACT_OUTPUT_MISSING: path=${JSON.stringify(path)} cause=${String(error)}`)
+  }
+  if (!(await stat(directory)).isDirectory()) {
+    throw new Error(`ARTIFACT_OUTPUT_NOT_DIRECTORY: path=${JSON.stringify(path)}`)
+  }
+  const entries = await readdir(directory)
+  if (entries.length > 0) {
+    throw new Error(`ARTIFACT_OUTPUT_NOT_EMPTY: path=${JSON.stringify(path)} entries=${JSON.stringify(entries)}`)
+  }
+  return directory
+}
+
+async function removeOutputFiles(paths: readonly string[]): Promise<unknown[]> {
+  const failures: unknown[] = []
+  for (const path of paths) {
+    try {
+      await rm(path)
+    } catch (error) {
+      failures.push(new Error(`artifact output cleanup failed: path=${path}; cause=${String(error)}`))
+    }
+  }
+  return failures
+}
+
+async function retainVerifiedFiles(
+  outputDir: string,
+  packages: VerifiedPackageResult[],
+  packed: ReadonlyMap<string, PackedTarball>,
+  created: string[],
+): Promise<void> {
+  await requireEmptyOutputDirectory(outputDir)
+  for (const [index, pkg] of packages.entries()) {
+    const tarball = packed.get(pkg.name)
+    if (tarball === undefined) throw new Error(`PACK_ARTIFACT_MISSING: package=${pkg.name} packed=[]`)
+    const destination = join(outputDir, `${String(index).padStart(4, "0")}-${basename(tarball.tarballPath)}`)
+    const file = await open(destination, "wx")
+    created.push(destination)
+    try {
+      await file.writeFile(await readFile(tarball.tarballPath))
+    } finally {
+      await file.close()
+    }
+    const sourceIntegrity = await tarballIntegrity(tarball.tarballPath)
+    const retainedIntegrity = await tarballIntegrity(destination)
+    if (sourceIntegrity !== retainedIntegrity) {
+      throw new Error(
+        `ARTIFACT_OUTPUT_CONTRADICTED: package=${pkg.name} source=${sourceIntegrity} retained=${retainedIntegrity}`,
+      )
+    }
+    pkg.tarballPath = destination
+    pkg.sha512 = retainedIntegrity
+  }
+}
+
+async function cleanupResources(
+  registry: RegistryHandle | undefined,
+  artifactRoot: string,
+  afterStop?: () => Promise<void>,
+): Promise<unknown[]> {
   const failures: unknown[] = []
   if (registry !== undefined) {
     try {
       await registry.stop()
     } catch (error) {
       failures.push(new Error(`registry cleanup failed: url=${registry.url}; cause=${String(error)}`))
+    }
+  }
+  if (failures.length === 0 && afterStop !== undefined) {
+    try {
+      await afterStop()
+    } catch (error) {
+      failures.push(error)
     }
   }
   try {
@@ -80,6 +153,10 @@ function registryPath(registry: RegistryHandle, key: "npmrcPath" | "stateRoot"):
 
 export async function verifyRepository(options: VerifyRepositoryOptions): Promise<VerifyRepositoryResult> {
   const root = await realpath(options.root)
+  if (options.keep && options.outputDir !== undefined) {
+    throw new Error("ARTIFACT_OUTPUT_KEEP_CONFLICT: --keep and --output-dir cannot be combined")
+  }
+  const outputDir = options.outputDir === undefined ? undefined : await requireEmptyOutputDirectory(options.outputDir)
   const repository = await discoverRepository(root)
   const host = await resolveHostTools(root)
   const selfRoot = findSelfPackageRoot(fileURLToPath(import.meta.url))
@@ -93,6 +170,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
   let registry: RegistryHandle | undefined
   let result: VerifyRepositoryResult | undefined
   let primaryError: unknown
+  let packedArtifacts: ReadonlyMap<string, PackedTarball> | undefined
 
   try {
     const sizes = new Map<string, number>()
@@ -114,6 +192,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       }
       return results
     })
+    packedArtifacts = packed
 
     for (const pkg of repository.publicPackages) {
       const tarball = packed.get(pkg.name)
@@ -245,7 +324,22 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
     return { ...result!, kept }
   }
 
-  const cleanupFailures = await cleanupResources(registry, artifactRoot)
+  const createdOutputFiles: string[] = []
+  const cleanupFailures = await cleanupResources(
+    registry,
+    artifactRoot,
+    outputDir !== undefined && primaryError === undefined
+      ? async () => {
+          if (result === undefined || packedArtifacts === undefined) {
+            throw new Error("ARTIFACT_OUTPUT_RESULT_MISSING: verification completed without package results")
+          }
+          await retainVerifiedFiles(outputDir, result.packages, packedArtifacts, createdOutputFiles)
+        }
+      : undefined,
+  )
+  if (cleanupFailures.length > 0 && createdOutputFiles.length > 0) {
+    cleanupFailures.push(...(await removeOutputFiles(createdOutputFiles)))
+  }
   registry = undefined
   if (primaryError !== undefined) {
     if (cleanupFailures.length === 0) throw primaryError

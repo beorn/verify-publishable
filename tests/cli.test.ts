@@ -54,6 +54,39 @@ describe("CLI result contract", () => {
     expect(verify).toHaveBeenCalledWith({ root: "/fixture", noBuild: false, keep: false })
   })
 
+  test("passes a caller-owned output directory to the verifier and reports retained files", async () => {
+    const stdout = sink()
+    const stderr = sink()
+    const verify = vi.fn(async () => ({
+      nodeVersion: "v24.18.1",
+      npmVersion: "11.6.2",
+      buildMode: "configured" as const,
+      packages: [
+        {
+          name: "fixture",
+          version: "1.0.0",
+          unpackedSize: 42,
+          sha256: "0".repeat(64),
+          sha512: "sha512-fixture",
+          tarballPath: "/artifacts/fixture.tgz",
+          specifiers: ["fixture"],
+          bins: [],
+          consumerCheckRan: false,
+        },
+      ],
+    }))
+
+    const status = await runCli({ argv: ["--output-dir", "/artifacts"], cwd: "/fixture", stdout, stderr, verify })
+
+    expect(status).toBe(0)
+    expect(verify).toHaveBeenCalledWith({ root: "/fixture", noBuild: false, keep: false, outputDir: "/artifacts" })
+    expect(JSON.parse(stdout.value())).toMatchObject({
+      schema: "verify-publishable/v1",
+      ok: true,
+      packages: [{ tarballPath: "/artifacts/fixture.tgz", sha512: "sha512-fixture" }],
+    })
+  })
+
   /**
    * @failure Subprocess stdout holds the actual diagnosis but only stderr is retained,
    * or the process exits nonzero without a machine-readable result.
