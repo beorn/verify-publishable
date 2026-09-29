@@ -54,6 +54,24 @@ function writeManifestTarball(path: string, manifest: Record<string, unknown>): 
   writeFileSync(path, gzipSync(Buffer.concat([header, source, padding, Buffer.alloc(1024)])))
 }
 
+function tarEntry(name: string, type: string, data = Buffer.alloc(0)): Buffer {
+  const header = Buffer.alloc(512)
+  header.write(name, 0, "utf8")
+  header.write(`${data.byteLength.toString(8).padStart(11, "0")}\0`, 124, "ascii")
+  header[156] = type.charCodeAt(0)
+  return Buffer.concat([header, data, Buffer.alloc(Math.ceil(data.length / 512) * 512 - data.length)])
+}
+
+function paxPath(path: string) {
+  const record = `path=${path}\n`
+  let length = Buffer.byteLength(record) + 2
+  while (true) {
+    const next = Buffer.byteLength(`${length} ${record}`)
+    if (next === length) return Buffer.from(`${length} ${record}`)
+    length = next
+  }
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -157,6 +175,33 @@ describe("npm pack size inspection", () => {
 })
 
 describe("exact tarball gates", () => {
+  test("sees PAX long paths and symlink names in the packed file list", async () => {
+    const root = temporaryDirectory()
+    const destination = temporaryDirectory("verify-publishable-tarballs-")
+    const longPath = `dist/${"nested/".repeat(30)}index.js`
+    const pkg = fixturePackage(root)
+    const tarballPath = join(destination, "fixture-package-1.2.3.tgz")
+    const run: CommandRunner = async () => {
+      const archive = Buffer.concat([
+        tarEntry("package/package.json", "0", Buffer.from(JSON.stringify({ name: pkg.name, version: pkg.version }))),
+        tarEntry("PaxHeader", "x", paxPath(`package/${longPath}`)),
+        tarEntry("placeholder", "0", Buffer.from("export {}\n")),
+        tarEntry("package/linked.js", "2"),
+        Buffer.alloc(1024),
+      ])
+      writeFileSync(tarballPath, gzipSync(archive))
+      return commandResult(JSON.stringify({ filename: tarballPath, name: pkg.name, version: pkg.version }))
+    }
+
+    const record = await packPackage(pkg, {
+      destination,
+      nodePath: process.execPath,
+      pnpm: resolvedTool("pnpm", "pnpm", join(root, "pnpm.cjs")),
+      run,
+    })
+    expect(record.artifact.entries).toEqual(new Set(["package.json", longPath, "linked.js"]))
+  })
+
   test("suppresses lifecycle output while creating the exact pnpm tarball", async () => {
     const root = temporaryDirectory()
     const destination = temporaryDirectory("verify-publishable-tarballs-")
@@ -198,7 +243,13 @@ describe("exact tarball gates", () => {
       name: "@fixture/package",
       tarballPath: join(destination, "fixture-package-1.2.3.tgz"),
       version: "1.2.3",
+      artifact: {
+        manifest: expect.objectContaining({ name: "@fixture/package", version: "1.2.3" }),
+        entries: expect.any(Set),
+      },
     })
+    expect([...record.artifact.entries]).toContain("package.json")
+    expect([...record.artifact.entries]).toContain("index.js")
     expect(existsSync(record.tarballPath)).toBe(true)
   })
 

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { inspectNpmPack, packPackage, runTarballChecks, type PackedTarball } from "./artifacts.ts"
 import { executeBuild, type BuildMode } from "./build.ts"
 import { discoverRepository } from "./discovery.ts"
+import { assertPackShape } from "./pack-shape.ts"
 import { resolveHostTools } from "./preflight.ts"
 import { probeFreshConsumer } from "./probes.ts"
 import { publishTarballs } from "./publish.ts"
@@ -197,6 +198,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
     for (const pkg of repository.publicPackages) {
       const tarball = packed.get(pkg.name)
       if (tarball === undefined) throw new Error(`PACK_ARTIFACT_MISSING: package=${pkg.name} packed=[]`)
+      assertPackShape(pkg.name, tarball.artifact)
       await runTarballChecks(pkg, {
         attw: tools.attw,
         nodePath: host.nodePath,

@@ -192,7 +192,7 @@ describe("real repository verification", () => {
     }
   }, 120_000)
 
-  test("Publint rejects an export target absent from the packed artifact", async () => {
+  test("packed shape rejects an export target absent from the packed artifact", async () => {
     const root = installedFixture()
     const outputDir = emptyOutputDirectory()
     updatePublicManifest(root, (manifest) => {
@@ -203,9 +203,28 @@ describe("real repository verification", () => {
 
     const failure = await captureFailure(verifyRepository({ root, outputDir }))
 
-    expect(failure).toBeInstanceOf(CommandFailure)
-    expect(failure).toMatchObject({ phase: `publint:${PUBLIC_NAME}`, status: 1 })
-    expect(commandDiagnostic(failure as CommandFailure)).toMatch(/dist\/not-built\.js|not published|does not exist/i)
+    expect((failure as Error).message).toContain("PACK_SHAPE_INVALID")
+    expect((failure as Error).message).toContain("exports")
+    expect((failure as Error).message).toContain("./dist/not-built.js")
+    expect(readdirSync(outputDir)).toEqual([])
+  }, 120_000)
+
+  test("packed shape rejects shipped TypeScript source under an unused browser condition", async () => {
+    const root = installedFixture()
+    const outputDir = emptyOutputDirectory()
+    writeFileSync(join(root, "packages/public/src/unused.ts"), "export const bad = 1\n")
+    updatePublicManifest(root, (manifest) => {
+      manifest.files = ["dist", "src"]
+      manifest.exports = {
+        ".": { types: "./dist/index.d.ts", import: "./dist/index.js", browser: "./src/unused.ts" },
+      }
+    })
+
+    const failure = await captureFailure(verifyRepository({ root, outputDir }))
+
+    expect((failure as Error).message).toContain("PACK_SHAPE_INVALID")
+    expect((failure as Error).message).toContain("typescript-source")
+    expect((failure as Error).message).toContain("./src/unused.ts")
     expect(readdirSync(outputDir)).toEqual([])
   }, 120_000)
 
@@ -223,7 +242,7 @@ describe("real repository verification", () => {
     )
   }, 120_000)
 
-  test("Publint rejects a declaration target absent from the packed artifact", async () => {
+  test("packed shape rejects a declaration target absent from the packed artifact", async () => {
     const root = installedFixture()
     updatePublicManifest(root, (manifest) => {
       manifest.types = "./dist/not-built.d.ts"
@@ -234,9 +253,8 @@ describe("real repository verification", () => {
 
     const failure = await captureFailure(verifyRepository({ root }))
 
-    expect(failure).toBeInstanceOf(CommandFailure)
-    expect(failure).toMatchObject({ phase: `publint:${PUBLIC_NAME}`, status: 1 })
-    expect(commandDiagnostic(failure as CommandFailure)).toMatch(/dist\/not-built\.d\.ts|not published|does not exist/i)
+    expect((failure as Error).message).toContain("PACK_SHAPE_INVALID")
+    expect((failure as Error).message).toContain("./dist/not-built.d.ts")
   }, 120_000)
 
   test("fresh install reports ETARGET for an unpublished local sibling version", async () => {

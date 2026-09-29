@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { isAbsolute, relative, resolve } from "node:path"
 import { gunzipSync } from "node:zlib"
 
+import type { PackedArtifact } from "./pack-shape.ts"
 import { runCommand, type CommandResult, type CommandSpec } from "./process.ts"
 import type { ResolvedTool } from "./tools.ts"
 
@@ -25,6 +26,7 @@ export interface PackedTarball {
   name: string
   tarballPath: string
   version: string
+  artifact: PackedArtifact
 }
 
 export interface TarballCheckResults {
@@ -164,7 +166,7 @@ function tarEntrySize(block: Buffer, pkg: ArtifactPackage, tarballPath: string):
   return size
 }
 
-function packedManifest(pkg: ArtifactPackage, tarballPath: string): Record<string, unknown> {
+function packedArtifact(pkg: ArtifactPackage, tarballPath: string): PackedArtifact {
   let archive: Buffer
   try {
     archive = gunzipSync(readFileSync(tarballPath), { maxOutputLength: MAX_INSPECTED_ARCHIVE_BYTES })
@@ -175,23 +177,45 @@ function packedManifest(pkg: ArtifactPackage, tarballPath: string): Record<strin
   }
 
   const manifests: Buffer[] = []
+  const entries = new Set<string>()
+  let nextPath: string | undefined
   for (let offset = 0; offset + TAR_BLOCK_BYTES <= archive.byteLength; ) {
     const header = archive.subarray(offset, offset + TAR_BLOCK_BYTES)
     if (header.every((byte) => byte === 0)) break
     const name = tarString(header, 0, 100)
     const prefix = tarString(header, 345, 155)
-    const path = prefix === "" ? name : `${prefix}/${name}`
+    const headerPath = prefix === "" ? name : `${prefix}/${name}`
     const size = tarEntrySize(header, pkg, tarballPath)
     const dataStart = offset + TAR_BLOCK_BYTES
     const dataEnd = dataStart + size
     if (dataEnd > archive.byteLength) {
       throw new Error(
-        `packed tarball entry is truncated: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)} entry=${JSON.stringify(path)} size=${size}`,
+        `packed tarball entry is truncated: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)} entry=${JSON.stringify(headerPath)} size=${size}`,
       )
     }
     const type = String.fromCharCode(header[156] ?? 0)
-    if (path === "package/package.json" && (type === "\0" || type === "0")) {
-      manifests.push(archive.subarray(dataStart, dataEnd))
+    const data = archive.subarray(dataStart, dataEnd)
+    if (type === "x") {
+      // npm tarballs may use PAX headers for paths that do not fit USTAR.
+      for (let position = 0; position < data.length; ) {
+        const separator = data.indexOf(32, position)
+        const length = Number(data.subarray(position, separator).toString("ascii"))
+        if (separator < 0 || !Number.isSafeInteger(length) || length <= 0 || position + length > data.length) {
+          throw new Error(
+            `packed tarball has invalid PAX metadata: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)}`,
+          )
+        }
+        const record = data.subarray(separator + 1, position + length - 1).toString("utf8")
+        if (record.startsWith("path=")) nextPath = record.slice(5)
+        position += length
+      }
+    } else if (type === "L") {
+      nextPath = data.toString("utf8").split("\0", 1)[0]
+    } else if (type !== "g") {
+      const path = nextPath ?? headerPath
+      nextPath = undefined
+      if (type !== "5" && path.startsWith("package/")) entries.add(path.slice("package/".length))
+      if ((type === "\0" || type === "0") && path === "package/package.json") manifests.push(data)
     }
     offset = dataStart + Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES
   }
@@ -206,7 +230,7 @@ function packedManifest(pkg: ArtifactPackage, tarballPath: string): Record<strin
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw new Error("top level must be an object")
     }
-    return value as Record<string, unknown>
+    return { manifest: value as Record<string, unknown>, entries }
   } catch (error) {
     throw new Error(
       `packed package/package.json is invalid: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)} cause=${String(error)}`,
@@ -293,14 +317,15 @@ export async function packPackage(
     )
   }
 
-  const manifest = packedManifest(pkg, tarballPath)
+  const artifact = packedArtifact(pkg, tarballPath)
+  const manifest = artifact.manifest
   if (manifest.name !== pkg.name || manifest.version !== pkg.version) {
     throw new Error(
       `packed tarball manifest identity mismatch: actual=${JSON.stringify({ name: manifest.name, version: manifest.version })} expected=${JSON.stringify({ name: pkg.name, version: pkg.version })} tarballPath=${JSON.stringify(tarballPath)}`,
     )
   }
 
-  return { name: pkg.name, tarballPath, version: pkg.version }
+  return { name: pkg.name, tarballPath, version: pkg.version, artifact }
 }
 
 export async function runTarballChecks(
