@@ -9,7 +9,7 @@ import { executeBuild, type BuildMode } from "./build.ts"
 import { discoverRepository } from "./discovery.ts"
 import { assertPackShape } from "./pack-shape.ts"
 import { resolveHostTools } from "./preflight.ts"
-import { probeFreshConsumer } from "./probes.ts"
+import { probeFreshConsumer, type ProbeRuntime } from "./probes.ts"
 import { publishTarballs } from "./publish.ts"
 import { startRegistry, type RegistryHandle } from "./registry.ts"
 import { assertServedIntegrity, tarballIntegrity } from "./served-integrity.ts"
@@ -35,6 +35,8 @@ export interface VerifiedPackageResult {
   specifiers: string[]
   bins: string[]
   consumerCheckRan: boolean
+  /** The runtimes the consumer probes ran under, each with its version and the engines reason that selected it. */
+  runtimes: ProbeRuntime[]
 }
 
 export interface VerifyRepositoryResult {
@@ -272,6 +274,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
         registryUrl: registry.url,
         npmrcPath,
         nodePath: host.nodePath,
+        ...(host.bunPath === null ? {} : { bunPath: host.bunPath }),
         npmPath: host.npmPath,
         sourceRoot: root,
         abortSignal: registry.abortSignal,
@@ -290,6 +293,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
         specifiers: probe.specifiers,
         bins: probe.bins,
         consumerCheckRan: probe.consumerCheckRan,
+        runtimes: probe.runtimes,
       })
     }
 

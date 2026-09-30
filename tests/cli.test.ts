@@ -36,6 +36,7 @@ describe("CLI result contract", () => {
           specifiers: ["fixture"],
           bins: [],
           consumerCheckRan: false,
+          runtimes: [{ runtime: "node" as const, version: "v24.0.0", reason: "engines declares no runtime" }],
         },
       ],
     }))
@@ -72,6 +73,7 @@ describe("CLI result contract", () => {
           specifiers: ["fixture"],
           bins: [],
           consumerCheckRan: false,
+          runtimes: [{ runtime: "node" as const, version: "v24.0.0", reason: "engines declares no runtime" }],
         },
       ],
     }))

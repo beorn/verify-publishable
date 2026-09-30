@@ -129,6 +129,7 @@ describe("real repository verification", () => {
         specifiers: ["@verify-publishable-fixture/e2e-public"],
         bins: ["verify-publishable-e2e"],
         consumerCheckRan: false,
+        runtimes: [{ runtime: "node", version: result.nodeVersion, reason: "engines declares no runtime" }],
       },
     ])
     expect(result.packages[0]!.unpackedSize).toBeGreaterThan(0)

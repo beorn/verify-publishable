@@ -43,6 +43,15 @@ describe("host preflight", () => {
     ).rejects.toThrow(/HOST_TOOL_MISSING.*tool=npm.*searched=PATH/i)
   })
 
+  test("a host without Bun still resolves; only a bun-declaring package's probe needs it", async () => {
+    await expect(
+      resolveHostTools("/fixture", {
+        which: (name) => (name === "bun" ? null : `/tools/${name}`),
+        run: async (spec: CommandSpec) => (spec.args?.[0] === "--version" ? result("v24.18.1\n") : result("11.6.2\n")),
+      }),
+    ).resolves.toMatchObject({ nodePath: "/tools/node", bunPath: null })
+  })
+
   test("returns absolute paths and parsed versions for a valid host", async () => {
     const run = vi.fn(async (spec: CommandSpec) =>
       spec.args?.[0] === "--version" ? result("v24.18.1\n") : result("11.6.2\n"),
@@ -55,6 +64,7 @@ describe("host preflight", () => {
       }),
     ).resolves.toEqual({
       nodePath: "/tools/node",
+      bunPath: "/tools/bun",
       nodeVersion: "v24.18.1",
       npmPath: "/tools/npm",
       npmVersion: "11.6.2",

@@ -17,10 +17,21 @@ export interface FreshConsumerOptions {
   registryUrl: string
   npmrcPath: string
   nodePath: string
+  /** Absolute Bun executable; required only when the packed manifest's engines declare bun. */
+  bunPath?: string
   npmPath: string
   sourceRoot?: string
   consumerCheck?: ConsumerCheck
   abortSignal?: AbortSignal
+}
+
+export type ProbeRuntimeName = "node" | "bun"
+
+/** One runtime the consumer probes ran under, its reported version, and why the manifest selected it. */
+export interface ProbeRuntime {
+  runtime: ProbeRuntimeName
+  version: string
+  reason: string
 }
 
 export interface FreshConsumerResult {
@@ -29,7 +40,32 @@ export interface FreshConsumerResult {
   specifiers: string[]
   bins: string[]
   consumerCheckRan: boolean
+  runtimes: ProbeRuntime[]
 }
+
+/**
+ * The runtimes a manifest promises, from its engines: node alone keeps Node 24, bun alone is probed under Bun, both
+ * are both probed, and neither keeps Node 24. A probe proves a promise the manifest makes, never one it does not.
+ */
+export function probeRuntimesFor(engines: unknown): Array<{ runtime: ProbeRuntimeName; reason: string }> {
+  const declared =
+    engines !== null && typeof engines === "object" && !Array.isArray(engines)
+      ? (engines as Record<string, unknown>)
+      : {}
+  const node = typeof declared.node === "string"
+  const bun = typeof declared.bun === "string"
+  if (node && bun) {
+    return [
+      { runtime: "node", reason: "engines declares node and bun" },
+      { runtime: "bun", reason: "engines declares node and bun" },
+    ]
+  }
+  if (bun) return [{ runtime: "bun", reason: "engines declares bun only" }]
+  if (node) return [{ runtime: "node", reason: "engines declares node only" }]
+  return [{ runtime: "node", reason: "engines declares no runtime" }]
+}
+
+const BUN_SHEBANG = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?bun(?:\s|$)/
 
 export class ProbeFailure extends Error {
   readonly phase: string
@@ -376,6 +412,77 @@ async function materializeCheck(
   }
 }
 
+/**
+ * The Bun a bun-declaring manifest is probed under: the one supplied, reporting a version its engines.bun range
+ * admits. Bun itself judges the range, so no second semver implementation decides it.
+ */
+async function selectedBun(
+  identity: PackageIdentity,
+  bunPath: string | undefined,
+  engines: unknown,
+  cwd: string,
+  reason: string,
+  runProbe: (spec: CommandSpec) => Promise<CommandResult>,
+): Promise<{ path: string; version: string }> {
+  const range = (engines as Record<string, unknown>).bun as string
+  if (bunPath === undefined || !isAbsolute(bunPath)) {
+    throw localFailure(identity, {
+      phase: "bun-version",
+      command: [String(bunPath), "--version"],
+      cwd,
+      stderr: `${reason}, so the consumer probes run under Bun, but no absolute bunPath was supplied: bunPath=${String(bunPath)} engines.bun=${JSON.stringify(range)}`,
+    })
+  }
+  const judge = await runProbe({
+    phase: "bun-version",
+    command: bunPath,
+    args: [
+      "--eval",
+      "process.stdout.write(JSON.stringify({ version: Bun.version, satisfies: Bun.semver.satisfies(Bun.version, process.argv[1]) }))",
+      range,
+    ],
+    cwd,
+  })
+  let verdict: { version?: unknown; satisfies?: unknown }
+  try {
+    verdict = JSON.parse(judge.stdout) as typeof verdict
+  } catch (error) {
+    throw localFailure(identity, {
+      phase: "bun-version",
+      command: [bunPath, "--eval"],
+      cwd,
+      stderr: `bunPath did not report its version as JSON: bunPath=${bunPath} stdout=${JSON.stringify(judge.stdout)}; cause=${String(error)}`,
+    })
+  }
+  if (typeof verdict.version !== "string" || verdict.satisfies !== true) {
+    throw localFailure(identity, {
+      phase: "bun-version",
+      command: [bunPath, "--version"],
+      cwd,
+      stderr: `Bun at bunPath=${bunPath} reports ${JSON.stringify(verdict.version)}, which engines.bun=${JSON.stringify(range)} does not admit`,
+    })
+  }
+  return { path: bunPath, version: verdict.version }
+}
+
+async function refuseBunShebang(
+  identity: PackageIdentity,
+  consumerRoot: string,
+  binName: string,
+  binPath: string,
+): Promise<void> {
+  const target = await realpath(binPath)
+  const firstLine = (await readFile(target, "utf8")).split("\n", 1)[0] ?? ""
+  if (BUN_SHEBANG.test(firstLine)) {
+    throw localFailure(identity, {
+      phase: "bin-runtime",
+      command: [binPath, "--help"],
+      cwd: consumerRoot,
+      stderr: `engines declares node, but bin ${binName} runs under Bun: target=${target} shebang=${JSON.stringify(firstLine)}`,
+    })
+  }
+}
+
 export async function probeFreshConsumer(options: FreshConsumerOptions): Promise<FreshConsumerResult> {
   const identity = { name: options.package.name, version: options.package.version }
   const sourceRoot = options.sourceRoot ?? process.cwd()
@@ -409,6 +516,7 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
       stderr: versionResult.stderr === "" ? diagnostic : `${versionResult.stderr.replace(/\n$/, "")}\n${diagnostic}`,
     })
   }
+  const nodeVersion = versionResult.stdout.trim()
   const consumerRoot = await mkdtemp(join(tmpdir(), "verify-publishable-consumer-"))
 
   const run = async (): Promise<FreshConsumerResult> => {
@@ -450,15 +558,38 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
 
     const manifest = await installedManifest(identity, consumerRoot)
     const specifiers = literalSpecifiers(identity.name, manifest.exports)
-    const importScript = `const specifiers = JSON.parse(process.argv[1]);\nfor (const specifier of specifiers) {\n  try {\n    await import(specifier);\n  } catch (error) {\n    console.error(specifier + ": " + (error?.stack ?? String(error)));\n    process.exit(1);\n  }\n}`
-    for (const mode of ["development", "production"] as const) {
-      await runProbe({
-        phase: `import-${mode}`,
-        command: options.nodePath,
-        args: ["--input-type=module", "--eval", importScript, JSON.stringify(specifiers)],
-        cwd: consumerRoot,
-        env: { ...npmEnvironment, NODE_ENV: mode },
+    const selected = probeRuntimesFor(manifest.engines)
+    const runtimes: Array<ProbeRuntime & { command: string; env: NodeJS.ProcessEnv }> = []
+    for (const { runtime, reason } of selected) {
+      if (runtime === "node") {
+        runtimes.push({ runtime, version: nodeVersion, reason, command: options.nodePath, env: npmEnvironment })
+        continue
+      }
+      const bunPath = await selectedBun(identity, options.bunPath, manifest.engines, consumerRoot, reason, runProbe)
+      runtimes.push({
+        runtime,
+        version: bunPath.version,
+        reason,
+        command: bunPath.path,
+        env: controlledEnvironment(bunPath.path, options.registryUrl, options.npmrcPath),
       })
+    }
+
+    const importScript = `const specifiers = JSON.parse(process.argv[1]);\nfor (const specifier of specifiers) {\n  try {\n    await import(specifier);\n  } catch (error) {\n    console.error(specifier + ": " + (error?.stack ?? String(error)));\n    process.exit(1);\n  }\n}`
+    for (const probe of runtimes) {
+      for (const mode of ["development", "production"] as const) {
+        await runProbe({
+          // Node's phase names are unchanged; a Bun probe says so in its phase.
+          phase: probe.runtime === "node" ? `import-${mode}` : `import-${mode}-bun`,
+          command: probe.command,
+          args:
+            probe.runtime === "node"
+              ? ["--input-type=module", "--eval", importScript, JSON.stringify(specifiers)]
+              : ["--eval", importScript, JSON.stringify(specifiers)],
+          cwd: consumerRoot,
+          env: { ...probe.env, NODE_ENV: mode },
+        })
+      }
     }
 
     const packageRoot = packageDirectory(consumerRoot, identity.name)
@@ -481,13 +612,23 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
         "package bin",
         packageRoot,
       )
-      await runProbe({
-        phase: "bin-help",
-        command: binPath,
-        args: ["--help"],
-        cwd: consumerRoot,
-        env: npmEnvironment,
-      })
+      for (const probe of runtimes) {
+        if (probe.runtime === "node") {
+          // A package that promises Node must not ship a bin only Bun runs (no-engines packages keep today's probe).
+          if (typeof (manifest.engines as Record<string, unknown> | undefined)?.node === "string") {
+            await refuseBunShebang(identity, consumerRoot, binName, binPath)
+          }
+          await runProbe({ phase: "bin-help", command: binPath, args: ["--help"], cwd: consumerRoot, env: probe.env })
+          continue
+        }
+        await runProbe({
+          phase: "bin-help-bun",
+          command: probe.command,
+          args: [binPath, "--help"],
+          cwd: consumerRoot,
+          env: probe.env,
+        })
+      }
     }
 
     if (options.consumerCheck !== undefined) {
@@ -515,6 +656,7 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
       specifiers,
       bins: bins.map(([name]) => name),
       consumerCheckRan: options.consumerCheck !== undefined,
+      runtimes: runtimes.map(({ runtime, version, reason }) => ({ runtime, version, reason })),
     }
   }
 

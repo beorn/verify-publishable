@@ -6,6 +6,8 @@ import { runCommand } from "./process.ts"
 
 export interface HostTools {
   nodePath: string
+  /** Resolved like nodePath, but optional: only a package whose engines declare bun needs it, and its probe refuses by name. */
+  bunPath: string | null
   nodeVersion: string
   npmPath: string
   npmVersion: string
@@ -23,7 +25,7 @@ function requiredPath(name: "node" | "npm", which: HostToolDependencies["which"]
   return path
 }
 
-export function findHostExecutable(name: "node" | "npm", env: NodeJS.ProcessEnv = process.env): string | null {
+export function findHostExecutable(name: "node" | "npm" | "bun", env: NodeJS.ProcessEnv = process.env): string | null {
   const bunPath = realpathSync(process.execPath)
   const executable = process.platform === "win32" ? `${name}.exe` : name
   for (const directory of (env.PATH ?? "").split(delimiter)) {
@@ -55,7 +57,7 @@ export async function resolveHostTools(
   cwd: string,
   dependencies: Partial<HostToolDependencies> = {},
 ): Promise<HostTools> {
-  const which = dependencies.which ?? ((name: string) => findHostExecutable(name as "node" | "npm"))
+  const which = dependencies.which ?? ((name: string) => findHostExecutable(name as "node" | "npm" | "bun"))
   const run = dependencies.run ?? runCommand
   const nodePath = requiredPath("node", which)
   const nodeResult = await run({ phase: "preflight", command: nodePath, args: ["--version"], cwd, timeoutMs: 10_000 })
@@ -77,5 +79,10 @@ export async function resolveHostTools(
     throw new Error(`NPM_VERSION_INVALID: expected=<major>.<minor>.<patch> actual=${npmVersion}`)
   }
 
-  return { nodePath, nodeVersion, npmPath, npmVersion }
+  const bunPath = which("bun")
+  if (bunPath !== null && !isAbsolute(bunPath)) {
+    throw new Error(`HOST_TOOL_INVALID: tool=bun expected=absolute-path actual=${bunPath}`)
+  }
+
+  return { nodePath, bunPath, nodeVersion, npmPath, npmVersion }
 }
