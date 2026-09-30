@@ -21,7 +21,7 @@ import { dirname, join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
 
 import { findHostExecutable } from "../src/preflight.ts"
-import { ProbeFailure, probeFreshConsumer } from "../src/probes.ts"
+import { literalSpecifiers, ProbeFailure, probeFreshConsumer } from "../src/probes.ts"
 
 const roots: string[] = []
 const configuredNodePath = process.env.NODE_FOR_TESTS
@@ -579,5 +579,22 @@ describe("probe runtimes follow the manifest's engines", () => {
       stderr: expect.stringMatching(/engines declares node, but bin fixture runs under Bun.*#!\/usr\/bin\/env bun/),
     })
     expect(existsSync(fixture.binLog)).toBe(false)
+  })
+})
+
+describe("literal import specifiers", () => {
+  /**
+   * @failure A package whose exports map lists subpaths but no "." fails its fresh-consumer probe on the bare
+   * package name, which Node refuses by design (ERR_PACKAGE_PATH_NOT_EXPORTED) and the manifest never promised.
+   * @level l0
+   * @consumer probeFreshConsumer's import phases
+   */
+  test("imports the root only where the manifest exports it", () => {
+    expect(literalSpecifiers("p", undefined)).toEqual(["p"])
+    expect(literalSpecifiers("p", "./dist/index.js")).toEqual(["p"])
+    expect(literalSpecifiers("p", { import: "./a.js", types: "./a.d.ts" })).toEqual(["p"])
+    expect(literalSpecifiers("p", { ".": "./a.js", "./b": "./b.js", "./c/*": "./c/*.js" })).toEqual(["p", "p/b"])
+    expect(literalSpecifiers("p", { "./runtime": "./r.js" })).toEqual(["p/runtime"])
+    expect(literalSpecifiers("p", { "./*": "./*.js" })).toEqual([])
   })
 })

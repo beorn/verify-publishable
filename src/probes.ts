@@ -221,10 +221,25 @@ async function installedManifest(identity: PackageIdentity, consumerRoot: string
   return manifest
 }
 
-function literalSpecifiers(packageName: string, exportsField: unknown): string[] {
-  const specifiers = new Set([packageName])
-  if (exportsField === null || typeof exportsField !== "object" || Array.isArray(exportsField)) return [...specifiers]
-  for (const subpath of Object.keys(exportsField as Record<string, unknown>).sort()) {
+/**
+ * The specifiers a fresh consumer may import: the package root unless an exports subpath map leaves "." out (Node
+ * then refuses the bare name with ERR_PACKAGE_PATH_NOT_EXPORTED, so the manifest promises no root import), plus
+ * every literal subpath. A string, array or condition-object exports value is the root.
+ */
+export function literalSpecifiers(packageName: string, exportsField: unknown): string[] {
+  if (
+    exportsField === undefined ||
+    exportsField === null ||
+    typeof exportsField !== "object" ||
+    Array.isArray(exportsField)
+  ) {
+    return [packageName]
+  }
+  const keys = Object.keys(exportsField as Record<string, unknown>)
+  if (!keys.some((key) => key.startsWith("."))) return [packageName]
+  const specifiers = new Set<string>()
+  if (keys.includes(".")) specifiers.add(packageName)
+  for (const subpath of keys.sort()) {
     if (subpath === "." || subpath.includes("*")) continue
     if (subpath.startsWith("./") && subpath.length > 2) specifiers.add(`${packageName}/${subpath.slice(2)}`)
   }
@@ -530,6 +545,14 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
 
     const manifest = await installedManifest(identity, consumerRoot)
     const specifiers = literalSpecifiers(identity.name, manifest.exports)
+    if (specifiers.length === 0) {
+      throw localFailure(identity, {
+        phase: "import-specifiers",
+        command: [join(consumerRoot, "node_modules", identity.name, "package.json")],
+        cwd: consumerRoot,
+        stderr: `no literal import specifier: exports=${JSON.stringify(manifest.exports)} names neither "." nor a literal subpath, so a fresh consumer has nothing to import`,
+      })
+    }
     const selected = probeRuntimesFor(manifest.engines)
     const runtimes: Array<ProbeRuntime & { command: string; env: NodeJS.ProcessEnv }> = []
     for (const { runtime, reason } of selected) {
