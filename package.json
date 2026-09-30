@@ -19,6 +19,9 @@
     "linux"
   ],
   "type": "module",
+  "exports": {
+    "./runtime": "./src/runtime.ts"
+  },
   "scripts": {
     "test": "bunx --no-install --bun vitest run",
     "typecheck": "tsc --noEmit",

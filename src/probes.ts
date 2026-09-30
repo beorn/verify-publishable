@@ -4,6 +4,9 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 
 import type { DiscoveredPackage, PackageManifest } from "./discovery.ts"
 import { CommandFailure, runCommand, type CommandResult, type CommandSpec } from "./process.ts"
+import { probeRuntimesFor, type ProbeRuntime, type ProbeRuntimeName } from "./runtime.ts"
+
+export { probeRuntimesFor, type ProbeRuntime, type ProbeRuntimeName }
 
 export interface ConsumerCheck {
   package: string
@@ -25,15 +28,6 @@ export interface FreshConsumerOptions {
   abortSignal?: AbortSignal
 }
 
-export type ProbeRuntimeName = "node" | "bun"
-
-/** One runtime the consumer probes ran under, its reported version, and why the manifest selected it. */
-export interface ProbeRuntime {
-  runtime: ProbeRuntimeName
-  version: string
-  reason: string
-}
-
 export interface FreshConsumerResult {
   packageName: string
   version: string
@@ -41,28 +35,6 @@ export interface FreshConsumerResult {
   bins: string[]
   consumerCheckRan: boolean
   runtimes: ProbeRuntime[]
-}
-
-/**
- * The runtimes a manifest promises, from its engines: node alone keeps Node 24, bun alone is probed under Bun, both
- * are both probed, and neither keeps Node 24. A probe proves a promise the manifest makes, never one it does not.
- */
-export function probeRuntimesFor(engines: unknown): Array<{ runtime: ProbeRuntimeName; reason: string }> {
-  const declared =
-    engines !== null && typeof engines === "object" && !Array.isArray(engines)
-      ? (engines as Record<string, unknown>)
-      : {}
-  const node = typeof declared.node === "string"
-  const bun = typeof declared.bun === "string"
-  if (node && bun) {
-    return [
-      { runtime: "node", reason: "engines declares node and bun" },
-      { runtime: "bun", reason: "engines declares node and bun" },
-    ]
-  }
-  if (bun) return [{ runtime: "bun", reason: "engines declares bun only" }]
-  if (node) return [{ runtime: "node", reason: "engines declares node only" }]
-  return [{ runtime: "node", reason: "engines declares no runtime" }]
 }
 
 const BUN_SHEBANG = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?bun(?:\s|$)/
