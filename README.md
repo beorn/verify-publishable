@@ -4,15 +4,19 @@
 
 ## Install and run
 
-Pin the repository commit in the consuming repository:
+Add the registry package to the consuming repository with a semver range:
 
 ```json
 {
   "devDependencies": {
-    "verify-publishable": "github:beorn/verify-publishable#<full-commit-sha>"
+    "verify-publishable": "^1.0.0"
   }
 }
 ```
+
+A range lets a workspace install share one copy across many consumers; a newer verifier is a range bump. A pin
+to a repository commit (`github:beorn/verify-publishable#<full-commit-sha>`) still installs, but Bun cannot share it
+between workspaces that pin different commits.
 
 Then run the gate after the repository's frozen install:
 

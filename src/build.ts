@@ -58,7 +58,10 @@ export function planBuild(plan: RepositoryPlan, options: { noBuild: boolean }): 
   return { mode: "package-scripts", steps }
 }
 
-const SHELL_RUNNER = fileURLToPath(new URL("./shell-runner.ts", import.meta.url))
+// The runner sits beside this module: shell-runner.ts in the source tree, shell-runner.js in the published dist.
+const SHELL_RUNNER = fileURLToPath(
+  new URL(import.meta.url.endsWith(".ts") ? "./shell-runner.ts" : "./shell-runner.js", import.meta.url),
+)
 
 export async function executeBuild(
   repository: RepositoryPlan,
