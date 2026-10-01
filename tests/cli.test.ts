@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from "vitest"
 
 import { runCli } from "../src/cli.ts"
-import { CommandFailure } from "../src/process.ts"
+import { CommandFailure, runCommand } from "../src/process.ts"
+import { ProbeFailure } from "../src/probes.ts"
 
 function sink() {
   let value = ""
@@ -14,6 +15,82 @@ function sink() {
 }
 
 describe("CLI result contract", () => {
+  /**
+   * @failure Probe wrapping erases a real signal/timeout from the existing CLI failure fields.
+   * @level l1
+   * @consumer machine-readable release diagnostics with empty child streams
+   */
+  test.each([false, true])("projects the same real command cause with timeout=%s", async (timedOut) => {
+    const cause = await runCommand({
+      phase: "import-production-bun",
+      command: process.execPath,
+      args: ["-e", timedOut ? "setInterval(() => {}, 1000)" : 'process.kill(process.pid, "SIGTERM")'],
+      cwd: process.cwd(),
+      ...(timedOut ? { timeoutMs: 100 } : {}),
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(cause).toBeInstanceOf(CommandFailure)
+    const commandFailure = cause as CommandFailure
+    expect(commandFailure.signal).toBe("SIGTERM")
+    expect(commandFailure.timedOut).toBe(timedOut)
+    const failure = new ProbeFailure({
+      phase: commandFailure.phase,
+      packageName: "fixture",
+      packageVersion: "1.0.0",
+      command: commandFailure.command,
+      cwd: commandFailure.cwd,
+      status: commandFailure.status,
+      stdout: commandFailure.stdout,
+      stderr: commandFailure.stderr,
+      cause: commandFailure,
+    })
+    const stdout = sink()
+    const stderr = sink()
+    const status = await runCli({
+      argv: [],
+      cwd: "/fixture",
+      stdout,
+      stderr,
+      verify: async () => {
+        throw failure
+      },
+    })
+    expect(status).toBe(1)
+    expect(failure.cause).toBe(commandFailure)
+    const result = JSON.parse(stdout.value())
+    expect(result).toMatchObject({
+      schema: "verify-publishable/v1",
+      ok: false,
+      failures: [
+        {
+          code: "PROBE_FAILED",
+          phase: "import",
+          package: "fixture",
+          signal: "SIGTERM",
+          detail: expect.stringContaining(commandFailure.message),
+        },
+      ],
+    })
+    expect(result.failures[0].detail).toContain(`durationMs=${commandFailure.durationMs}`)
+    if (timedOut) expect(result.failures[0].detail).toContain("timeout=true")
+    expect(result.failures[0].detail).not.toContain("spawn-error")
+    expect(Object.keys(result.failures[0]).sort()).toEqual([
+      "code",
+      "command",
+      "cwd",
+      "detail",
+      "package",
+      "phase",
+      "signal",
+      "status",
+      "stderr",
+      "stdout",
+    ])
+    expect(stderr.value()).toContain(commandFailure.message)
+  })
+
   /**
    * @failure Human progress logs mix with the result stream, so CI cannot parse a single
    * authoritative verdict.

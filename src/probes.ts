@@ -58,10 +58,14 @@ export class ProbeFailure extends Error {
     status: number | null
     stdout: string
     stderr: string
+    cause?: CommandFailure
   }) {
     const renderedCommand = options.command.map((part) => JSON.stringify(part)).join(" ")
     super(
-      `consumer probe failed: phase=${JSON.stringify(options.phase)}; package=${JSON.stringify(`${options.packageName}@${options.packageVersion}`)}; command=${renderedCommand}; cwd=${JSON.stringify(options.cwd)}; status=${options.status === null ? "spawn-error" : options.status}; stdout=${JSON.stringify(options.stdout)}; stderr=${JSON.stringify(options.stderr)}`,
+      options.cause === undefined
+        ? `consumer probe failed: phase=${JSON.stringify(options.phase)}; package=${JSON.stringify(`${options.packageName}@${options.packageVersion}`)}; command=${renderedCommand}; cwd=${JSON.stringify(options.cwd)}; status=${options.status === null ? "none" : options.status}; stdout=${JSON.stringify(options.stdout)}; stderr=${JSON.stringify(options.stderr)}`
+        : `consumer probe failed: package=${JSON.stringify(`${options.packageName}@${options.packageVersion}`)}; ${options.cause.message}`,
+      { cause: options.cause },
     )
     this.name = "ProbeFailure"
     this.phase = options.phase
@@ -117,6 +121,7 @@ async function runProbeCommand(identity: PackageIdentity, spec: CommandSpec): Pr
         status: error.status,
         stdout: error.stdout,
         stderr: error.stderr,
+        cause: error,
       })
     }
     throw error

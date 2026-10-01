@@ -20,6 +20,7 @@ import { dirname, join } from "node:path"
 
 import { afterEach, describe, expect, test } from "vitest"
 
+import { CommandFailure } from "../src/process.ts"
 import { findHostExecutable } from "../src/preflight.ts"
 import { literalSpecifiers, ProbeFailure, probeFreshConsumer } from "../src/probes.ts"
 
@@ -185,6 +186,48 @@ afterEach(() => {
 })
 
 describe("fresh consumer probes", () => {
+  /**
+   * @failure Wrapping a real spawn failure loses its ENOENT cause and lifecycle metadata.
+   * @level l1
+   * @consumer fresh-consumer diagnostics with empty child output
+   */
+  test("preserves the real missing executable failure as its typed cause", async () => {
+    const fixture = fakeNpm()
+    const sourceRoot = temporaryDirectory("missing-node")
+    const missingNode = join(sourceRoot, "absent-node")
+    const failure = await probeFreshConsumer({
+      package: { name: "@fixture/public", version: "1.2.3" },
+      registryUrl: "http://127.0.0.1:4873/",
+      npmrcPath: join(sourceRoot, "npmrc"),
+      nodePath: missingNode,
+      npmPath: fixture.npmPath,
+      sourceRoot,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(failure).toBeInstanceOf(ProbeFailure)
+    const wrapped = failure as ProbeFailure
+    expect(wrapped.cause).toBeInstanceOf(CommandFailure)
+    const cause = wrapped.cause as CommandFailure
+    expect(cause.spawnError).toMatchObject({ code: "ENOENT" })
+    expect(cause).toMatchObject({
+      phase: "node-version",
+      command: [missingNode, "--version"],
+      status: null,
+      signal: null,
+      timedOut: false,
+      aborted: false,
+      stdout: "",
+      stderr: "",
+    })
+    expect(cause.durationMs).toEqual(expect.any(Number))
+    expect(wrapped.message).toContain(cause.message)
+    expect(wrapped.message).toContain("@fixture/public@1.2.3")
+    expect(wrapped.message).toContain("ENOENT")
+    expect(existsSync(fixture.commandLog)).toBe(false)
+  })
+
   /**
    * @failure A Node check resolves Bun or an installed .bin/node instead of the selected host Node,
    * or changes materialized files and literal arguments.
@@ -501,6 +544,7 @@ describe("fresh consumer probes", () => {
     expect((failure as ProbeFailure).command[0]).toMatch(/node_modules\/\.bin\/vitest$/)
     expect((failure as ProbeFailure).command.slice(1)).toEqual(["run", "check.mjs"])
     expect((failure as ProbeFailure).stderr).toMatch(/required installed runner link is missing.*vitest/is)
+    expect((failure as ProbeFailure).message).not.toContain("spawn-error")
   })
 
   test("refuses a supplied Node whose reported major is not 24 before invoking npm", async () => {

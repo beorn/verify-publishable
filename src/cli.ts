@@ -93,7 +93,7 @@ function normalizeOne(error: unknown, cwd: string): FailureResult[] {
         command: error.command,
         cwd: error.cwd,
         status: error.status,
-        signal: null,
+        signal: error.cause instanceof CommandFailure ? error.cause.signal : null,
         stdout: error.stdout,
         stderr: error.stderr,
         detail: error.message,
