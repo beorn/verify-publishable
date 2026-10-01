@@ -1,8 +1,7 @@
 {
-  "modules": ["release"],
+  "modules": [],
   "vars": {
     "testCommand": "bun run check",
-    "bunVersion": "1.3.14",
-    "verifierPath": "./bin/verify-publishable"
+    "bunVersion": "1.3.14"
   }
 }

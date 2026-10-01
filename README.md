@@ -2,27 +2,35 @@
 
 `verify-publishable` is a fail-loud release gate for Bun repositories. It builds the repository, packs the exact npm artifacts, checks their metadata and types, publishes the whole local dependency closure to an isolated Verdaccio registry, and installs every public package into a fresh consumer under Node 24.
 
-## Install and run
+## Run it in GitHub Actions
 
-Add the registry package to the consuming repository with a semver range:
+The checker is a GitHub Action, called in one line and pinned by full commit. It is not an npm package: the manifest
+is `private: true`, so nothing publishes it.
 
-```json
-{
-  "devDependencies": {
-    "verify-publishable": "^1.0.0"
-  }
-}
+```yaml
+- uses: actions/setup-node@v4
+  with:
+    node-version: "24"
+- uses: oven-sh/setup-bun@v2
+  with:
+    bun-version: 1.3.14
+- run: bun install --frozen-lockfile
+- run: mkdir "$RUNNER_TEMP/verified-tarballs"
+- id: verify
+  uses: beorn/verify-publishable@<40-hex commit>
+  with:
+    output-dir: ${{ runner.temp }}/verified-tarballs
+- run: cat "${{ steps.verify.outputs.report }}"
 ```
 
-A range lets a workspace install share one copy across many consumers; a newer verifier is a range bump. A pin
-to a repository commit (`github:beorn/verify-publishable#<full-commit-sha>`) still installs, but Bun cannot share it
-between workspaces that pin different commits.
+- Pin a full commit, never a tag or branch: the pin is what delivers the checker's code.
+- The action installs only its own dependencies, in its own directory. It never sets up or changes the caller's toolchain. It checks that Bun, Node and npm are on `PATH` and that Bun satisfies this manifest's `engines.bun`, and fails by name otherwise.
+- Inputs: `output-dir` (an existing directory that receives the verified tarballs; omit it to keep none) and `working-directory` (default `.`). Output: `report`, the path of the JSON report described under [Output and failures](#output-and-failures).
 
-Then run the gate after the repository's frozen install:
+Outside Actions, run the bin from a checkout of this repository after `bun install --frozen-lockfile`, with the repository to verify as the working directory:
 
 ```sh
-bun install --frozen-lockfile
-bunx --bun --no-install verify-publishable
+/path/to/verify-publishable/bin/verify-publishable --output-dir <directory>
 ```
 
 The host must provide Bun, Node 24, and npm. The gate uses only its declared, pinned copies of pnpm, Verdaccio, Publint, and `@arethetypeswrong/cli`. Linux and macOS are supported.
