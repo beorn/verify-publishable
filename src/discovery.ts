@@ -124,7 +124,7 @@ function readConfig(manifest: Record<string, unknown>): VerifyPublishableConfig 
         throw new Error(`verifyPublishable.checks[${index}].package must be a non-empty string`)
       }
       if (typeof check.runner !== "string" || !/^[A-Za-z0-9._-]+$/.test(check.runner)) {
-        throw new Error(`verifyPublishable.checks[${index}].runner must name one node_modules/.bin entry`)
+        throw new Error(`verifyPublishable.checks[${index}].runner must be node or name one node_modules/.bin entry`)
       }
       if (!Array.isArray(check.args) || check.args.some((argument) => typeof argument !== "string")) {
         throw new Error(`verifyPublishable.checks[${index}].args must be a string array`)

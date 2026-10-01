@@ -529,6 +529,8 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
       args: [
         options.npmPath,
         "install",
+        "--engine-strict",
+        "--force=false",
         "--no-save",
         "--no-package-lock",
         "--no-audit",
@@ -628,14 +630,17 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
 
     if (options.consumerCheck !== undefined) {
       await materializeCheck(identity, consumerRoot, options.sourceRoot, options.consumerCheck)
-      const checkBin = await explicitBin(
-        identity,
-        consumerRoot,
-        options.consumerCheck.runner,
-        "consumer-check-link",
-        options.consumerCheck.args,
-        "runner",
-      )
+      const checkBin =
+        options.consumerCheck.runner === "node"
+          ? options.nodePath
+          : await explicitBin(
+              identity,
+              consumerRoot,
+              options.consumerCheck.runner,
+              "consumer-check-link",
+              options.consumerCheck.args,
+              "runner",
+            )
       await runProbe({
         phase: "consumer-check",
         command: checkBin,

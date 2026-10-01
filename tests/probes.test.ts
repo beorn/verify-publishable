@@ -39,6 +39,7 @@ interface FakeNpmOptions {
   rootFailsUnderBun?: boolean
   emptyFeature?: boolean
   linkPackageBin?: boolean
+  linkNodeBin?: boolean
   linkVitestBin?: boolean
   nodeVersion?: string
   registerMatcher?: boolean
@@ -138,6 +139,12 @@ chmodSync(join(packageRoot, "cli.mjs"), 0o755)
 if (${options.linkPackageBin !== false}) {
   symlinkSync(join(packageRoot, "cli.mjs"), join(cwd, "node_modules", ".bin", "fixture"))
 }
+if (${options.linkNodeBin === true}) {
+  const hostileNode = join(packageRoot, "hostile-node.mjs")
+  writeFileSync(hostileNode, ${JSON.stringify("#!/bin/sh\nexit 89\n")})
+  chmodSync(hostileNode, 0o755)
+  symlinkSync(hostileNode, join(cwd, "node_modules", ".bin", "node"))
+}
 if (${options.linkVitestBin === true}) {
   const vitestRoot = join(cwd, "node_modules", "fake-vitest")
   mkdirSync(vitestRoot, { recursive: true })
@@ -178,6 +185,48 @@ afterEach(() => {
 })
 
 describe("fresh consumer probes", () => {
+  /**
+   * @failure A Node check resolves Bun or an installed .bin/node instead of the selected host Node,
+   * or changes materialized files and literal arguments.
+   * @level l1
+   * @consumer runner=node checks in Bun-hosted fresh consumers
+   */
+  test.each([false, true])("runs the selected Node with installed node link=%s", async (linkNodeBin) => {
+    const fixture = fakeNpm({ linkNodeBin })
+    const npmrcPath = join(temporaryDirectory("npmrc"), "consumer.npmrc")
+    writeFileSync(npmrcPath, "registry=http://127.0.0.1:4873/\n")
+    const sourceRoot = temporaryDirectory("source")
+    const receipt = join(sourceRoot, "receipt.json")
+    const args = ["check.mjs", "an argument with spaces", "--literal"]
+    writeFileSync(
+      join(sourceRoot, "check.mjs"),
+      `import { readFileSync, writeFileSync } from "node:fs"\nimport "@fixture/public"\nwriteFileSync(${JSON.stringify(receipt)}, JSON.stringify({ execPath: process.execPath, version: process.version, bun: typeof Bun, args: process.argv.slice(2), data: readFileSync("data.txt", "utf8") }))\n`,
+    )
+    writeFileSync(join(sourceRoot, "data.txt"), "copied payload\n")
+    const result = await probeFreshConsumer({
+      package: { name: "@fixture/public", version: "1.2.3" },
+      registryUrl: "http://127.0.0.1:4873/",
+      npmrcPath,
+      nodePath: fixture.nodePath,
+      npmPath: fixture.npmPath,
+      sourceRoot,
+      consumerCheck: { package: "@fixture/public", runner: "node", args, files: ["check.mjs", "data.txt"] },
+    })
+    expect(result.consumerCheckRan).toBe(true)
+    expect(JSON.parse(readFileSync(receipt, "utf8"))).toEqual({
+      execPath: hostNodePath,
+      version: expect.stringMatching(/^v24\./),
+      bun: "undefined",
+      args: args.slice(1),
+      data: "copied payload\n",
+    })
+    const selectedCalls = readFileSync(fixture.nodeLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+    expect(selectedCalls).toContainEqual(args)
+  })
+
   test("installs the exact version and exercises literal exports, bins, and an opt-in check", async () => {
     const fixture = fakeNpm({ linkVitestBin: true })
     const npmrcPath = join(temporaryDirectory("npmrc"), "consumer.npmrc")
@@ -252,6 +301,8 @@ describe("fresh consumer probes", () => {
     ])
     expect(npmCalls[1]?.args).toEqual([
       "install",
+      "--engine-strict",
+      "--force=false",
       "--no-save",
       "--no-package-lock",
       "--no-audit",

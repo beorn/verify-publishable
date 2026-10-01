@@ -13,6 +13,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs"
@@ -21,6 +22,7 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, test } from "vitest"
 
+import { findHostExecutable } from "../src/preflight.ts"
 import { CommandFailure } from "../src/process.ts"
 import { ProbeFailure } from "../src/probes.ts"
 import { verifyRepository } from "../src/verify.ts"
@@ -111,12 +113,23 @@ describe("real repository verification", () => {
   test("builds, packs, checks, publishes, installs, imports, and runs the public bin", async () => {
     const root = installedFixture()
 
+    updatePublicManifest(root, (manifest) => {
+      manifest.engines = { node: ">=24 <25" }
+    })
+
     const internalManifestPath = join(root, "packages/internal/package.json")
     const internalManifestBefore = readFileSync(internalManifestPath, "utf8")
     expect(existsSync(join(root, "packages/public/dist/index.js"))).toBe(false)
 
     const result = await verifyRepository({ root })
 
+    const selectedNode = findHostExecutable("node")
+    if (selectedNode === null) throw new Error("HOST_TOOL_MISSING: tool=node searched=PATH purpose=receipt-test")
+    expect(result.nodePath).toBe(realpathSync(selectedNode))
+    expect(result.nodePath).not.toBe(realpathSync(process.execPath))
+    const actualVersion = Bun.spawnSync([selectedNode, "--version"], { stdout: "pipe", stderr: "pipe" })
+    expect(actualVersion.success).toBe(true)
+    expect(result.nodeVersion).toBe(actualVersion.stdout.toString().trim())
     expect(result.nodeVersion).toMatch(/^v24\./)
     expect(result.npmVersion).toMatch(/^\d+\.\d+\.\d+/)
     expect(result.buildMode).toBe("root-script")
@@ -129,7 +142,7 @@ describe("real repository verification", () => {
         specifiers: ["@verify-publishable-fixture/e2e-public"],
         bins: ["verify-publishable-e2e"],
         consumerCheckRan: false,
-        runtimes: [{ runtime: "node", version: result.nodeVersion, reason: "engines declares no runtime" }],
+        runtimes: [{ runtime: "node", version: result.nodeVersion, reason: "engines declares node only" }],
       },
     ])
     expect(result.packages[0]!.unpackedSize).toBeGreaterThan(0)
@@ -164,6 +177,33 @@ describe("real repository verification", () => {
     expect((failure as Error).message).toContain("ARTIFACT_OUTPUT_NOT_EMPTY")
     expect(readFileSync(join(outputDir, "marker"), "utf8")).toBe("caller data")
     expect(existsSync(join(root, "packages/public/dist/index.js"))).toBe(false)
+  }, 120_000)
+
+  /**
+   * @failure Inherited npm force admits a package whose installed engines exclude the actual Node,
+   * so the fresh consumer claims compatibility npm never checked.
+   * @level l3
+   * @consumer npm engine enforcement in the real repository release gate
+   */
+  test("rejects incompatible installed engines even with inherited npm force", async () => {
+    const root = installedFixture()
+    updatePublicManifest(root, (manifest) => {
+      manifest.engines = { node: ">=25" }
+    })
+    const prior = process.env.npm_config_force
+    process.env.npm_config_force = "true"
+    let failure: unknown
+    try {
+      failure = await captureFailure(verifyRepository({ root }))
+    } finally {
+      if (prior === undefined) delete process.env.npm_config_force
+      else process.env.npm_config_force = prior
+    }
+    expect(failure).toBeInstanceOf(ProbeFailure)
+    expect(failure).toMatchObject({ phase: "consumer-install", packageName: PUBLIC_NAME, status: 1 })
+    expect(commandDiagnostic(failure as ProbeFailure)).toMatch(/EBADENGINE/)
+    expect(commandDiagnostic(failure as ProbeFailure)).toContain(">=25")
+    expect(existsSync((failure as ProbeFailure).cwd)).toBe(false)
   }, 120_000)
 
   test("--keep reports and preserves inspectable artifacts plus the live registry", async () => {

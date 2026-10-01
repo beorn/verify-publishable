@@ -24,6 +24,7 @@ describe("CLI result contract", () => {
     const stdout = sink()
     const stderr = sink()
     const verify = vi.fn(async () => ({
+      nodePath: "/tools/node",
       nodeVersion: "v24.18.1",
       npmVersion: "11.6.2",
       buildMode: "configured" as const,
@@ -49,6 +50,7 @@ describe("CLI result contract", () => {
     expect(JSON.parse(stdout.value())).toMatchObject({
       schema: "verify-publishable/v1",
       ok: true,
+      nodePath: "/tools/node",
       nodeVersion: "v24.18.1",
       packages: [{ name: "fixture", version: "1.0.0" }],
     })

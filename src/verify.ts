@@ -40,6 +40,7 @@ export interface VerifiedPackageResult {
 }
 
 export interface VerifyRepositoryResult {
+  nodePath: string
   nodeVersion: string
   npmVersion: string
   buildMode: BuildMode
@@ -299,6 +300,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
 
     registry.assertAlive()
     result = {
+      nodePath: host.nodePath,
       nodeVersion: host.nodeVersion,
       npmVersion: host.npmVersion,
       buildMode: build.mode,
