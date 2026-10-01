@@ -45,30 +45,35 @@ describe("Git dependency package shape", () => {
   })
 
   /**
-   * @failure The registry tarball points its bin or ./runtime export at TypeScript source or at files the build
-   * does not emit, so a registry consumer cannot run the verifier or import its rule.
+   * @failure The checker is published to npm or listed as a registry package again, so a caller pins a version range
+   * instead of a commit and two workspaces install two copies (hh 26691, @cto d603245d: an action, not a package).
    * @level l0
-   * @consumer every registry consumer of verify-publishable, and km-infra's vendor-kit (./runtime)
+   * @consumer every caller of the action, and km-infra's vendor-kit (./runtime through its commit pin)
    */
-  test("publishes a built Bun bin and a typed ./runtime export from dist", () => {
-    const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
-      private?: boolean
-      version?: string
-      exports?: Record<string, unknown>
-      publishConfig?: { access?: string; bin?: Record<string, string>; exports?: Record<string, unknown> }
-      scripts?: Record<string, string>
-    }
-    expect(manifest.private).toBeUndefined()
-    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/)
-    expect(manifest.publishConfig).toEqual({
-      access: "public",
-      bin: { "verify-publishable": "./dist/bin.js" },
-      exports: { "./runtime": { types: "./dist/runtime.d.ts", import: "./dist/runtime.js" } },
-    })
-    expect(Object.keys(manifest.exports ?? {})).toEqual(Object.keys(manifest.publishConfig?.exports ?? {}))
-    expect(manifest.scripts?.prepack).toBe("bun run build")
-    expect(readFileSync(join(ROOT, "src", "bin.ts"), "utf8")).toMatch(
-      /^#!\/usr\/bin\/env bun\n\nimport \{ runCli \} from "\.\/cli\.ts"/,
+  test("refuses an npm publish: the manifest is private with no publishConfig", () => {
+    const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as Record<string, unknown>
+    expect(manifest.private).toBe(true)
+    expect(manifest.publishConfig).toBeUndefined()
+    expect(manifest.exports).toEqual({ "./runtime": "./src/runtime.ts" })
+    expect(existsSync(join(ROOT, ".github", "workflows", "release.yml"))).toBe(false)
+  })
+
+  /**
+   * @failure The action sets up or changes the caller's toolchain, installs into the caller's workspace, or returns no
+   * report path, so a release job verifies with tools it did not choose or cannot re-hash what was verified.
+   * @level l0
+   * @consumer release.yml and verify.yml rendered by km-infra's vendor-kit
+   */
+  test("is a composite action that installs only in its own path and returns the report path", () => {
+    const action = readFileSync(join(ROOT, "action.yml"), "utf8")
+    expect(action).toMatch(/^runs:\n {2}using: composite$/m)
+    // No nested action: setup-node, setup-bun or any other toolchain step belongs to the caller.
+    expect(action).not.toMatch(/^\s*(-\s+)?uses:/m)
+    expect(action).toContain(
+      "working-directory: ${{ github.action_path }}\n      run: bun install --frozen-lockfile --production",
     )
+    expect(action).toContain('"$ACTION_PATH/bin/verify-publishable"')
+    expect(action).toMatch(/^ {2}report:\n {4}description: .+\n {4}value: \$\{\{ steps\.verify\.outputs\.report \}\}$/m)
+    for (const tool of ["bun", "node", "npm"]) expect(action).toContain(tool)
   })
 })
