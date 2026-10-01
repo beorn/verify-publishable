@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 
 import { inspectNpmPack, packPackage, runTarballChecks, type PackedTarball } from "./artifacts.ts"
 import { executeBuild, type BuildMode } from "./build.ts"
-import { discoverRepository } from "./discovery.ts"
+import { discoverRepository, type PackageManifest } from "./discovery.ts"
 import { assertPackShape } from "./pack-shape.ts"
 import { resolveHostTools } from "./preflight.ts"
 import { probeFreshConsumer, type ProbeRuntime } from "./probes.ts"
@@ -272,6 +272,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       const consumerCheck = repository.config.checks?.find((check) => check.package === pkg.name)
       const probe = await probeFreshConsumer({
         package: pkg,
+        packedManifest: tarball.artifact.manifest as PackageManifest,
         registryUrl: registry.url,
         npmrcPath,
         nodePath: host.nodePath,

@@ -58,7 +58,9 @@ The optional root configuration is strict—unknown keys and malformed values fa
 
 The normal phase order is build, size inspection, pnpm pack, packed manifest target checks, strict Publint, ATTW's Node 16 compatibility profile (with only `cjs-resolves-to-esm` ignored), isolated publication, the served-integrity check, fresh npm install with engine enforcement, development and production imports, declared-bin `--help`, and the optional consumer check. The same tarball bytes are checked, published, and hashed. The registry runs in two phases on one storage: `publish` keeps the local packages off the npmjs uplink, so a version that is already released still publishes locally; `probe` restarts with the uplink so consumers resolve prior versions of local packages. Before any probe, every local package's served `dist.integrity` must equal its packed tarball's, or the gate refuses with `LOCAL_ARTIFACT_CONTRADICTED`, naming both hashes.
 
-Fresh installs use npm `--engine-strict --force=false`, so inherited force configuration cannot waive incompatible engines. This enforces Node and npm ranges for the target and its nonoptional dependency tree; npm may omit incompatible optional dependencies.
+The exact packed manifest selects the install policy before npm runs. Node-only, dual-runtime and default Node targets use npm `--engine-strict --force=false`, enforcing Node/npm ranges for the target and its nonoptional dependency tree; npm may omit incompatible optional dependencies. A Bun-only target uses `--engine-strict=false --force=false`. Both flags are explicit, so inherited strict/force configuration cannot change this policy. A packed/installed runtime-name disagreement refuses before import, showing both engine declarations and selection reasons.
+
+A Bun-only result proves that npm resolved and laid out a tree without its engine gate, and that the target's entry points import and bins run under a Bun satisfying the target's own `engines.bun`. It does not check any dependency's engines or prove a tree installed by Bun itself: npm checks `engines.node` and `engines.npm` against its host, never `engines.bun`.
 
 ## Options and environment
 

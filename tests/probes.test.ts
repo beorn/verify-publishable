@@ -20,6 +20,8 @@ import { dirname, join } from "node:path"
 
 import { afterEach, describe, expect, test } from "vitest"
 
+import type { PackageManifest } from "../src/discovery.ts"
+
 import { CommandFailure } from "../src/process.ts"
 import { findHostExecutable } from "../src/preflight.ts"
 import { literalSpecifiers, ProbeFailure, probeFreshConsumer } from "../src/probes.ts"
@@ -58,6 +60,7 @@ function executable(path: string, source: string): void {
 }
 
 function fakeNpm(options: FakeNpmOptions = {}): {
+  packedManifest: PackageManifest
   npmPath: string
   nodePath: string
   nodeLog: string
@@ -155,7 +158,7 @@ if (${options.linkVitestBin === true}) {
 }
 `
   writeFileSync(npmPath, source)
-  return { npmPath, nodePath, nodeLog, commandLog, importLog, binLog, checkLog, runtimeLog }
+  return { packedManifest: manifest, npmPath, nodePath, nodeLog, commandLog, importLog, binLog, checkLog, runtimeLog }
 }
 
 /** A Bun executable in its own directory that logs each invocation and runs the host Bun. */
@@ -197,6 +200,7 @@ describe("fresh consumer probes", () => {
     const missingNode = join(sourceRoot, "absent-node")
     const failure = await probeFreshConsumer({
       package: { name: "@fixture/public", version: "1.2.3" },
+      packedManifest: fixture.packedManifest,
       registryUrl: "http://127.0.0.1:4873/",
       npmrcPath: join(sourceRoot, "npmrc"),
       nodePath: missingNode,
@@ -248,6 +252,7 @@ describe("fresh consumer probes", () => {
     writeFileSync(join(sourceRoot, "data.txt"), "copied payload\n")
     const result = await probeFreshConsumer({
       package: { name: "@fixture/public", version: "1.2.3" },
+      packedManifest: fixture.packedManifest,
       registryUrl: "http://127.0.0.1:4873/",
       npmrcPath,
       nodePath: fixture.nodePath,
@@ -294,6 +299,7 @@ describe("fresh consumer probes", () => {
     try {
       result = await probeFreshConsumer({
         package: { name: "@fixture/public", version: "1.2.3" },
+        packedManifest: fixture.packedManifest,
         registryUrl: "http://127.0.0.1:4873/",
         npmrcPath,
         nodePath: fixture.nodePath,
@@ -397,6 +403,7 @@ describe("fresh consumer probes", () => {
 
     const failure = await probeFreshConsumer({
       package: { name: "@fixture/public", version: "1.2.3" },
+      packedManifest: fixture.packedManifest,
       registryUrl: "http://127.0.0.1:4873/",
       npmrcPath,
       nodePath: fixture.nodePath,
@@ -430,6 +437,7 @@ describe("fresh consumer probes", () => {
     await expect(
       probeFreshConsumer({
         package: { name: "@fixture/public", version: "1.2.3" },
+        packedManifest: fixture.packedManifest,
         registryUrl: "http://127.0.0.1:4873/",
         npmrcPath,
         nodePath: fixture.nodePath,
@@ -455,6 +463,7 @@ describe("fresh consumer probes", () => {
     await expect(
       probeFreshConsumer({
         package: { name: "@fixture/public", version: "1.2.3" },
+        packedManifest: fixture.packedManifest,
         registryUrl: "http://127.0.0.1:4873/",
         npmrcPath,
         nodePath: fixture.nodePath,
@@ -489,6 +498,7 @@ describe("fresh consumer probes", () => {
     await expect(
       probeFreshConsumer({
         package: { name: "@fixture/public", version: "1.2.3" },
+        packedManifest: fixture.packedManifest,
         registryUrl: "http://127.0.0.1:4873/",
         npmrcPath,
         nodePath: fixture.nodePath,
@@ -518,6 +528,7 @@ describe("fresh consumer probes", () => {
 
     const failure = await probeFreshConsumer({
       package: { name: "@fixture/public", version: "1.2.3" },
+      packedManifest: fixture.packedManifest,
       registryUrl: "http://127.0.0.1:4873/",
       npmrcPath,
       nodePath: fixture.nodePath,
@@ -555,6 +566,7 @@ describe("fresh consumer probes", () => {
     await expect(
       probeFreshConsumer({
         package: { name: "@fixture/public", version: "1.2.3" },
+        packedManifest: fixture.packedManifest,
         registryUrl: "http://127.0.0.1:4873/",
         npmrcPath,
         nodePath: fixture.nodePath,
@@ -573,11 +585,12 @@ describe("fresh consumer probes", () => {
 })
 
 describe("probe runtimes follow the manifest's engines", () => {
-  async function probe(fixture: ReturnType<typeof fakeNpm>, bunPath?: string) {
+  async function probe(fixture: ReturnType<typeof fakeNpm>, bunPath?: string, packedManifest?: PackageManifest) {
     const npmrcPath = join(temporaryDirectory("npmrc"), "consumer.npmrc")
     writeFileSync(npmrcPath, "registry=http://127.0.0.1:4873/\n")
     return probeFreshConsumer({
       package: { name: "@fixture/public", version: "1.2.3" },
+      packedManifest: arguments.length < 3 ? fixture.packedManifest : packedManifest!,
       registryUrl: "http://127.0.0.1:4873/",
       npmrcPath,
       nodePath: fixture.nodePath,
@@ -590,6 +603,11 @@ describe("probe runtimes follow the manifest's engines", () => {
     const fixture = fakeNpm({ engines: { bun: ">=1.0.0" }, binShebang: "bun" })
     const bun = fakeBun()
     const result = await probe(fixture, bun.bunPath)
+    expect(JSON.parse(lines(fixture.commandLog)[1]!).args.slice(0, 3)).toEqual([
+      "install",
+      "--engine-strict=false",
+      "--force=false",
+    ])
     expect(result.runtimes).toEqual([
       { runtime: "bun", version: expect.stringMatching(/^\d+\.\d+\.\d+/), reason: "engines declares bun only" },
     ])
@@ -605,6 +623,11 @@ describe("probe runtimes follow the manifest's engines", () => {
     const fixture = fakeNpm({ engines: { node: ">=24" } })
     const bun = fakeBun()
     const result = await probe(fixture, bun.bunPath)
+    expect(JSON.parse(lines(fixture.commandLog)[1]!).args.slice(0, 3)).toEqual([
+      "install",
+      "--engine-strict",
+      "--force=false",
+    ])
     expect(result.runtimes).toEqual([{ runtime: "node", version: "v24.99.0", reason: "engines declares node only" }])
     expect(lines(fixture.runtimeLog).sort()).toEqual(["development:node", "production:node"])
     expect(lines(bun.bunLog)).toEqual([])
@@ -614,6 +637,11 @@ describe("probe runtimes follow the manifest's engines", () => {
     const fixture = fakeNpm({ engines: { node: ">=24", bun: ">=1.0.0" } })
     const bun = fakeBun()
     const result = await probe(fixture, bun.bunPath)
+    expect(JSON.parse(lines(fixture.commandLog)[1]!).args.slice(0, 3)).toEqual([
+      "install",
+      "--engine-strict",
+      "--force=false",
+    ])
     expect(result.runtimes.map(({ runtime, reason }) => [runtime, reason])).toEqual([
       ["node", "engines declares node and bun"],
       ["bun", "engines declares node and bun"],
@@ -631,8 +659,41 @@ describe("probe runtimes follow the manifest's engines", () => {
     const fixture = fakeNpm()
     const bun = fakeBun()
     const result = await probe(fixture, bun.bunPath)
+    expect(JSON.parse(lines(fixture.commandLog)[1]!).args.slice(0, 3)).toEqual([
+      "install",
+      "--engine-strict",
+      "--force=false",
+    ])
     expect(result.runtimes).toEqual([{ runtime: "node", version: "v24.99.0", reason: "engines declares no runtime" }])
     expect(lines(bun.bunLog)).toEqual([])
+  })
+
+  /** Packed metadata owns install policy; fake successful npm cannot replace that promise. */
+  test.each([{ value: undefined }, { value: null }, { value: [] }, { value: "invalid" }])(
+    "refuses invalid required packed manifest $value before install",
+    async ({ value }) => {
+      const fixture = fakeNpm()
+      await expect(probe(fixture, undefined, value as unknown as PackageManifest)).rejects.toMatchObject({
+        phase: "packed-manifest",
+        stderr: expect.stringMatching(/packedManifest.*object/),
+      })
+      expect(lines(fixture.commandLog)).toEqual([])
+    },
+  )
+
+  test("refuses a packed/installed runtime-profile contradiction before importing", async () => {
+    const fixture = fakeNpm({ engines: { node: ">=24" } })
+    await expect(
+      probe(fixture, undefined, { ...fixture.packedManifest, engines: { bun: ">=1.0.0" } }),
+    ).rejects.toMatchObject({
+      phase: "runtime-profile",
+      stderr: expect.stringMatching(
+        /packed.*bun.*engines declares bun only.*installed.*node.*engines declares node only/,
+      ),
+    })
+    expect(lines(fixture.runtimeLog)).toEqual([])
+    const install = JSON.parse(lines(fixture.commandLog)[1]!)
+    expect(existsSync(install.cwd)).toBe(false)
   })
 
   test("a bun-only package whose import fails under Bun fails the gate", async () => {

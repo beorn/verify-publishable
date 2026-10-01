@@ -22,9 +22,9 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, test } from "vitest"
 
-import { findHostExecutable } from "../src/preflight.ts"
+import { resolveHostTools, findHostExecutable } from "../src/preflight.ts"
 import { CommandFailure } from "../src/process.ts"
-import { ProbeFailure } from "../src/probes.ts"
+import { probeFreshConsumer, ProbeFailure } from "../src/probes.ts"
 import { verifyRepository } from "../src/verify.ts"
 
 const FIXTURE = join(import.meta.dirname, "fixtures/e2e")
@@ -205,6 +205,76 @@ describe("real repository verification", () => {
     expect(commandDiagnostic(failure as ProbeFailure)).toContain(">=25")
     expect(existsSync((failure as ProbeFailure).cwd)).toBe(false)
   }, 120_000)
+
+  /** Real npm must relax its Node gate only for a Bun-only public promise, including transitive dependencies. */
+  test.each([false, true])(
+    "Bun-only dependency exclusion keeps the dual Node promise strict (dual=%s)",
+    async (dual) => {
+      const root = installedFixture()
+      updatePublicManifest(root, (manifest) => {
+        manifest.engines = dual ? { node: ">=24", bun: ">=1.0.0" } : { bun: ">=1.0.0" }
+      })
+      const path = join(root, "packages/internal/package.json")
+      const internal = JSON.parse(readFileSync(path, "utf8"))
+      internal.engines = { node: ">=25", bun: ">=1.0.0" }
+      writeFileSync(path, JSON.stringify(internal))
+      const priorForce = process.env.npm_config_force
+      const priorStrict = process.env.npm_config_engine_strict
+      process.env.npm_config_force = "true"
+      // pnpm packing has its own engine gate; the real consumer inherits strict=true below.
+      process.env.npm_config_engine_strict = "false"
+      try {
+        if (dual) {
+          const failure = await captureFailure(verifyRepository({ root }))
+          expect(failure).toBeInstanceOf(ProbeFailure)
+          expect(failure).toMatchObject({ phase: "consumer-install", status: 1 })
+          expect(commandDiagnostic(failure as ProbeFailure)).toMatch(/EBADENGINE/)
+          expect(commandDiagnostic(failure as ProbeFailure)).toContain(">=25")
+          expect(existsSync((failure as ProbeFailure).cwd)).toBe(false)
+        } else {
+          const result = await verifyRepository({ root, keep: true })
+          const kept = result.kept!
+          try {
+            process.env.npm_config_engine_strict = "true"
+            const host = await resolveHostTools(root)
+            const tarball = readdirSync(kept.artifactRoot, { recursive: true }).find((path) =>
+              String(path).endsWith("e2e-public-1.0.0.tgz"),
+            )
+            if (tarball === undefined) throw new Error("public fixture packed tarball missing")
+            const extracted = Bun.spawnSync([
+              "tar",
+              "-xOf",
+              join(kept.artifactRoot, String(tarball)),
+              "package/package.json",
+            ])
+            if (!extracted.success) throw new Error(`fixture manifest extraction failed: ${extracted.stderr}`)
+            const manifest = JSON.parse(extracted.stdout.toString())
+            const probe = await probeFreshConsumer({
+              package: { name: PUBLIC_NAME, version: "1.0.0" },
+              packedManifest: manifest,
+              registryUrl: kept.registryUrl!,
+              npmrcPath: kept.npmrcPath!,
+              nodePath: host.nodePath,
+              npmPath: host.npmPath,
+              bunPath: host.bunPath!,
+              sourceRoot: root,
+            })
+            expect(probe.runtimes.map(({ runtime }) => runtime)).toEqual(["bun"])
+          } finally {
+            if (kept.registryPid !== null) await stopKeptRegistry(kept.registryPid)
+            rmSync(kept.artifactRoot, { recursive: true, force: true })
+            if (kept.registryStateRoot !== null) rmSync(kept.registryStateRoot, { recursive: true, force: true })
+          }
+        }
+      } finally {
+        if (priorForce === undefined) delete process.env.npm_config_force
+        else process.env.npm_config_force = priorForce
+        if (priorStrict === undefined) delete process.env.npm_config_engine_strict
+        else process.env.npm_config_engine_strict = priorStrict
+      }
+    },
+    120_000,
+  )
 
   test("--keep reports and preserves inspectable artifacts plus the live registry", async () => {
     const root = installedFixture()

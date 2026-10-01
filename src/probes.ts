@@ -17,6 +17,7 @@ export interface ConsumerCheck {
 
 export interface FreshConsumerOptions {
   package: Pick<DiscoveredPackage, "name" | "version">
+  packedManifest: PackageManifest
   registryUrl: string
   npmrcPath: string
   nodePath: string
@@ -478,6 +479,20 @@ async function refuseBunShebang(
 export async function probeFreshConsumer(options: FreshConsumerOptions): Promise<FreshConsumerResult> {
   const identity = { name: options.package.name, version: options.package.version }
   const sourceRoot = options.sourceRoot ?? process.cwd()
+  if (
+    options.packedManifest === null ||
+    typeof options.packedManifest !== "object" ||
+    Array.isArray(options.packedManifest)
+  ) {
+    throw localFailure(identity, {
+      phase: "packed-manifest",
+      command: ["packedManifest"],
+      cwd: sourceRoot,
+      stderr: `required packedManifest must be an object: received=${JSON.stringify(options.packedManifest)}`,
+    })
+  }
+  const selected = probeRuntimesFor(options.packedManifest.engines)
+  const bunOnly = selected.length === 1 && selected[0]!.runtime === "bun"
   assertAbsoluteResource(identity, "npmPath", options.npmPath, sourceRoot)
   assertAbsoluteResource(identity, "nodePath", options.nodePath, sourceRoot)
   assertAbsoluteResource(identity, "npmrcPath", options.npmrcPath, sourceRoot)
@@ -534,7 +549,7 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
       args: [
         options.npmPath,
         "install",
-        "--engine-strict",
+        bunOnly ? "--engine-strict=false" : "--engine-strict",
         "--force=false",
         "--no-save",
         "--no-package-lock",
@@ -560,7 +575,17 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
         stderr: `no literal import specifier: exports=${JSON.stringify(manifest.exports)} names neither "." nor a literal subpath, so a fresh consumer has nothing to import`,
       })
     }
-    const selected = probeRuntimesFor(manifest.engines)
+    const installedSelection = probeRuntimesFor(manifest.engines)
+    if (
+      selected.map(({ runtime }) => runtime).join(",") !== installedSelection.map(({ runtime }) => runtime).join(",")
+    ) {
+      throw localFailure(identity, {
+        phase: "runtime-profile",
+        command: [join(packageDirectory(consumerRoot, identity.name), "package.json")],
+        cwd: consumerRoot,
+        stderr: `packed runtime profile contradicts installed: packed engines=${JSON.stringify(options.packedManifest.engines)} selection=${JSON.stringify(selected)}; installed engines=${JSON.stringify(manifest.engines)} selection=${JSON.stringify(installedSelection)}`,
+      })
+    }
     const runtimes: Array<ProbeRuntime & { command: string; env: NodeJS.ProcessEnv }> = []
     for (const { runtime, reason } of selected) {
       if (runtime === "node") {
