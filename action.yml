@@ -1,0 +1,57 @@
+name: verify-publishable
+description: Fail-loud verification of the packages a repository would publish.
+
+# Callers pin this action by full commit (uses: beorn/verify-publishable@<40 hex>), never by tag or branch: the pin
+# is what delivers the checker's code. The action installs only its own dependencies, in its own directory, and never
+# sets up or changes the caller's toolchain; it checks that toolchain and fails by name.
+
+inputs:
+  output-dir:
+    description: Directory that receives the exact verified tarballs. It must exist. Omit it to keep none.
+    required: false
+    default: ""
+  working-directory:
+    description: Repository to verify, relative to the workspace.
+    required: false
+    default: "."
+
+outputs:
+  report:
+    description: Path of the verify-publishable/v1 JSON report.
+    value: ${{ steps.verify.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the caller's toolchain
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        fail() { echo "::error title=verify-publishable::$1"; exit 1; }
+        for tool in bun node npm; do
+          command -v "$tool" > /dev/null || fail "$tool is not on PATH; set it up before this action (it never installs a toolchain)"
+        done
+        required=$(node -e 'console.log(require(process.argv[1]).engines.bun.replace(/^>=/, ""))' "$ACTION_PATH/package.json")
+        actual=$(bun --version)
+        node -e '
+          const [required, actual] = process.argv.slice(1).map(v => v.split(".").map(Number))
+          for (let i = 0; i < 3; i++) { if (actual[i] !== required[i]) process.exit(actual[i] > required[i] ? 0 : 1) }
+        ' "$required" "$actual" || fail "bun $actual is older than the checker's engines.bun >=$required"
+    - name: Install the checker's own dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: bun install --frozen-lockfile --production
+    - id: verify
+      name: Verify the repository
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        OUTPUT_DIR: ${{ inputs.output-dir }}
+      run: |
+        report=$(mktemp "$RUNNER_TEMP/verify-publishable-XXXXXX.json")
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+        args=()
+        if [ -n "$OUTPUT_DIR" ]; then args+=(--output-dir "$OUTPUT_DIR"); fi
+        "$ACTION_PATH/bin/verify-publishable" "${args[@]}" > "$report"
