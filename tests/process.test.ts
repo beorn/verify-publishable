@@ -1,10 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { EventEmitter } from "node:events"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { Writable } from "node:stream"
 
 import { afterEach, describe, expect, test, vi } from "vitest"
 
 import { CommandFailure, runCommand } from "../src/process.ts"
+import { createLiveSink } from "../src/build.ts"
 
 const roots: string[] = []
 const spawnedPids = new Set<number>()
@@ -66,6 +69,7 @@ function startStubbornProcessTree(options: {
   timeoutMs: number
   abortSignal?: AbortSignal
   parentIgnoresTerm?: boolean
+  onOutput?: (stream: "stdout" | "stderr", chunk: Buffer) => void
 }): { execution: ReturnType<typeof runCommand>; readyPath: string; termPath: string } {
   const readyPath = join(options.cwd, "descendant-ready.json")
   const termPath = join(options.cwd, "descendant-term.txt")
@@ -80,6 +84,8 @@ function startStubbornProcessTree(options: {
     options.parentIgnoresTerm === false ? undefined : 'process.on("SIGTERM", () => {})',
     `const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(descendantScript)}], { env: process.env, stdio: "ignore" })`,
     "descendant.unref()",
+    'process.stdout.write("TREE_READY\\n")',
+    'setTimeout(() => process.stdout.write("TREE_EXTRA\\n"), 30)',
     "setInterval(() => {}, 1_000)",
   ]
     .filter((line): line is string => line !== undefined)
@@ -93,6 +99,7 @@ function startStubbornProcessTree(options: {
       cwd: options.cwd,
       env: { VP_READY_PATH: readyPath, VP_TERM_PATH: termPath },
       timeoutMs: options.timeoutMs,
+      ...(options.onOutput === undefined ? {} : { onOutput: options.onOutput }),
       ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
     }),
     readyPath,
@@ -201,6 +208,25 @@ describe("process boundary", () => {
     })
   })
 
+  test("disables a throwing live callback once without changing the command outcome", async () => {
+    const cwd = temporaryDirectory()
+    let calls = 0
+    const result = await runCommand({
+      phase: "fixture",
+      command: process.execPath,
+      args: ["-e", 'process.stdout.write("out"); process.stderr.write("err")'],
+      cwd,
+      onOutput: () => {
+        calls++
+        throw new Error("sink failed")
+      },
+    })
+    expect(calls).toBe(1)
+    expect(result.stdout).toBe("out")
+    expect(result.stderr).toBe("err")
+    expect(result.liveOutputDiagnostic).toBe("live output stopped: sink failed")
+  })
+
   test("marks omitted output while preserving the diagnostic tail", async () => {
     const cwd = temporaryDirectory()
     const failure = await runCommand({
@@ -234,6 +260,25 @@ describe("process boundary", () => {
 
     expect(failure).toMatchObject({ timedOut: true, aborted: false, signal: "SIGKILL" })
     expect(readFileSync(termPath, "utf8")).toContain(`descendant:${receipt.descendantPid}\n`)
+    await waitForProcessExit(receipt.descendantPid)
+    await waitForProcessExit(receipt.parentPid)
+  })
+
+  processGroupTest("still terminates a chatty tree when live stderr is backpressured", async () => {
+    const cwd = temporaryDirectory()
+    const destination = new EventEmitter() as Writable
+    destination.write = ((_chunk: string, callback: () => void) => {
+      callback()
+      return false
+    }) as typeof destination.write
+    const live = createLiveSink(destination, "tree")
+    const { execution, readyPath } = startStubbornProcessTree({ cwd, timeoutMs: 1_000, onOutput: live.onOutput })
+    const receipt = await readProcessTreeReceipt(readyPath)
+    const failure = await commandFailure(execution)
+    expect(failure.timedOut).toBe(true)
+    expect(failure.stdout).toContain("TREE_READY")
+    expect(failure.stdout).toContain("TREE_EXTRA")
+    expect(await live.finish()).toMatch(/bytes dropped/)
     await waitForProcessExit(receipt.descendantPid)
     await waitForProcessExit(receipt.parentPid)
   })

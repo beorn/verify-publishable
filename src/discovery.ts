@@ -4,9 +4,11 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import type { BunOnlyBin } from "./runtime.ts"
 
 export const DEFAULT_MAX_UNPACKED_BYTES = 25 * 1024 * 1024
+export const DEFAULT_BUILD_TIMEOUT_MS = 600_000
 
 export interface VerifyPublishableConfig {
   build?: string
+  buildTimeoutMs: number
   checks?: ConsumerCheckConfig[]
   maxUnpackedBytes: number
   public?: string[]
@@ -55,7 +57,7 @@ export interface RepositoryPlan {
   excluded: string[]
 }
 
-const CONFIG_KEYS = new Set(["build", "bunOnlyBins", "checks", "maxUnpackedBytes", "public"])
+const CONFIG_KEYS = new Set(["build", "buildTimeoutMs", "bunOnlyBins", "checks", "maxUnpackedBytes", "public"])
 const BUN_ONLY_BIN_KEYS = ["package", "bin", "reason"] as const
 const CHECK_KEYS = new Set(["package", "runner", "args", "files"])
 
@@ -84,7 +86,8 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
 
 function readConfig(manifest: Record<string, unknown>): VerifyPublishableConfig {
   const raw = manifest.verifyPublishable
-  if (raw === undefined) return { maxUnpackedBytes: DEFAULT_MAX_UNPACKED_BYTES }
+  if (raw === undefined)
+    return { buildTimeoutMs: DEFAULT_BUILD_TIMEOUT_MS, maxUnpackedBytes: DEFAULT_MAX_UNPACKED_BYTES }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("verifyPublishable must be an object")
   }
@@ -94,7 +97,16 @@ function readConfig(manifest: Record<string, unknown>): VerifyPublishableConfig 
     if (!CONFIG_KEYS.has(key)) throw new Error(`unknown verifyPublishable key: ${key}`)
   }
 
-  const config: VerifyPublishableConfig = { maxUnpackedBytes: DEFAULT_MAX_UNPACKED_BYTES }
+  const config: VerifyPublishableConfig = {
+    buildTimeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
+    maxUnpackedBytes: DEFAULT_MAX_UNPACKED_BYTES,
+  }
+  if (object.buildTimeoutMs !== undefined) {
+    if (!Number.isSafeInteger(object.buildTimeoutMs) || (object.buildTimeoutMs as number) <= 0) {
+      throw new Error("verifyPublishable.buildTimeoutMs must be a positive safe integer")
+    }
+    config.buildTimeoutMs = object.buildTimeoutMs as number
+  }
   if (object.build !== undefined) {
     if (typeof object.build !== "string" || object.build.trim() === "") {
       throw new Error("verifyPublishable.build must be a non-empty command string")

@@ -1,6 +1,12 @@
 import { describe, expect, test, vi } from "vitest"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { spawn } from "node:child_process"
 
+import { executeBuild } from "../src/build.ts"
 import { runCli } from "../src/cli.ts"
+import { discoverRepository } from "../src/discovery.ts"
 import { CommandFailure, runCommand } from "../src/process.ts"
 import { ProbeFailure } from "../src/probes.ts"
 
@@ -15,6 +21,94 @@ function sink() {
 }
 
 describe("CLI result contract", () => {
+  /**
+   * @failure Closing the live stderr pipe crashes successful verification or loses its JSON diagnostic.
+   * @level l3
+   * @consumer CLI callers that consume stdout while abandoning advisory stderr
+   */
+  test("keeps a successful CLI result and one loss diagnostic with its stderr read end closed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "verify-publishable-cli-closed-stderr-"))
+    try {
+      writeFileSync(
+        join(root, "package.json"),
+        JSON.stringify({
+          name: "verify-publishable-closed-stderr-fixture",
+          version: "1.0.0",
+          type: "module",
+          packageManager: "pnpm@9.15.9",
+          files: ["index.js", "index.d.ts"],
+          types: "./index.d.ts",
+          exports: { ".": { types: "./index.d.ts", import: "./index.js" } },
+          publishConfig: { access: "public" },
+          scripts: { build: "printf CLOSED_STDERR_BUILD" },
+        }),
+      )
+      writeFileSync(join(root, "index.js"), "export const value = 42\n")
+      writeFileSync(join(root, "index.d.ts"), "export declare const value: number\n")
+      const child = spawn(process.execPath, [join(import.meta.dirname, "../bin/verify-publishable")], {
+        cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+      child.stderr.destroy()
+      let output = ""
+      child.stdout.setEncoding("utf8")
+      child.stdout.on("data", (chunk: string) => {
+        output += chunk
+      })
+      const status = await new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject)
+        child.once("close", resolve)
+      })
+      expect(output.trim().split("\n")).toHaveLength(1)
+      expect(JSON.parse(output), output).toMatchObject({
+        schema: "verify-publishable/v1",
+        ok: true,
+        liveOutput: {
+          stoppedAt: "verify-publishable-closed-stderr-fixture build",
+          diagnostic: expect.stringContaining("live output stopped:"),
+        },
+        packages: [{ name: "verify-publishable-closed-stderr-fixture", version: "1.0.0" }],
+      })
+      expect(status).toBe(0)
+      expect(output).not.toContain("CLOSED_STDERR_BUILD")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  test("keeps stdout one JSON document while a build writes both child streams", async () => {
+    const root = mkdtempSync(join(tmpdir(), "verify-publishable-cli-build-"))
+    try {
+      writeFileSync(
+        join(root, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          version: "1.0.0",
+          verifyPublishable: {
+            build: `bun -e 'process.stdout.write("CHATTER_OUT"); process.stderr.write("CHATTER_ERR")'`,
+          },
+        }),
+      )
+      const stdout = sink()
+      const stderr = sink()
+      const status = await runCli({
+        argv: [],
+        cwd: root,
+        stdout,
+        stderr,
+        verify: async () => {
+          await executeBuild(await discoverRepository(root))
+          throw new Error("stop after fake build")
+        },
+      })
+      expect(status).toBe(1)
+      expect(JSON.parse(stdout.value())).toMatchObject({ schema: "verify-publishable/v1", ok: false })
+      expect(stdout.value().trim().split("\n")).toHaveLength(1)
+      expect(stdout.value()).not.toMatch(/CHATTER_OUT|CHATTER_ERR/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
   /**
    * @failure Probe wrapping erases a real signal/timeout from the existing CLI failure fields.
    * @level l1
