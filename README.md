@@ -45,6 +45,7 @@ The optional root configuration is strict—unknown keys and malformed values fa
 {
   "verifyPublishable": {
     "build": "bun run build:all",
+    "buildTimeoutMs": 600000,
     "maxUnpackedBytes": 26214400,
     "public": ["example-package"],
     "checks": [
@@ -60,6 +61,7 @@ The optional root configuration is strict—unknown keys and malformed values fa
 ```
 
 - `build`: explicit root build command. Without it, the root `build` script is used; otherwise every public package must provide its own `build` script, and private-package build scripts are also run when present.
+- `buildTimeoutMs`: positive safe integer budget in milliseconds for each selected build step; defaults to 600000 (10 minutes) and resets for each selected build step. It does not change other phase deadlines.
 - `maxUnpackedBytes`: maximum public-package size reported by `npm pack --dry-run --json`; default 25 MiB.
 - `public`: exact asserted public-package names. Missing, extra, private, or non-public-access entries fail by name.
 - `checks`: at most one fresh-consumer check per asserted-public package. `files` are copied from the repository into the consumer, and `runner: "node"` runs the canonical host Node selected during preflight. Every other `runner` must resolve from that consumer's `node_modules/.bin`; path escapes and missing files or runners fail.
@@ -85,5 +87,7 @@ verify-publishable [--no-build] [--keep] [--output-dir <directory>]
 ## Output and failures
 
 Stdout contains exactly one JSON object using schema `verify-publishable/v1`. Human diagnostics, including child stdout and stderr, go to stderr. Success reports the canonical Node executable path and validated Node/npm versions, build mode, exact public packages, unpacked sizes, tarball SHA-256 hashes, import specifiers, bins, and consumer-check status. With `--output-dir`, each public package also reports its absolute `tarballPath` and npm-form `sha512-<base64>` digest over the retained file. A failed verification leaves no file from that run in the caller's directory.
+
+If live stderr forwarding stops, the JSON result includes one `liveOutput` observation with `stoppedAt` and `diagnostic`. This advisory output loss does not change the child outcome, `ok`, or the exit status.
 
 Expected resources never degrade into a skip or empty success. A missing manifest, build, executable, tarball, registry, installed package, export, declaration, bin, or configured check exits nonzero and identifies the phase, command, working directory, status, and captured output where applicable.

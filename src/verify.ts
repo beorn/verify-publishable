@@ -5,7 +5,7 @@ import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { inspectNpmPack, packPackage, runTarballChecks, type PackedTarball } from "./artifacts.ts"
-import { executeBuild, type BuildMode } from "./build.ts"
+import { executeBuild, readLiveOutputLoss, type BuildMode, type LiveOutputLoss } from "./build.ts"
 import { discoverRepository, type PackageManifest } from "./discovery.ts"
 import { assertPackShape } from "./pack-shape.ts"
 import { resolveHostTools } from "./preflight.ts"
@@ -44,6 +44,7 @@ export interface VerifyRepositoryResult {
   nodeVersion: string
   npmVersion: string
   buildMode: BuildMode
+  liveOutput?: LiveOutputLoss
   packages: VerifiedPackageResult[]
   kept?: {
     artifactRoot: string
@@ -300,11 +301,13 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
     }
 
     registry.assertAlive()
+    const liveOutput = readLiveOutputLoss()
     result = {
       nodePath: host.nodePath,
       nodeVersion: host.nodeVersion,
       npmVersion: host.npmVersion,
       buildMode: build.mode,
+      ...(liveOutput === undefined ? {} : { liveOutput }),
       packages,
     }
   } catch (error) {

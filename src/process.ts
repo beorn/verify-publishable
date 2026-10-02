@@ -8,6 +8,7 @@ export interface CommandSpec {
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
   abortSignal?: AbortSignal
+  onOutput?: (stream: "stdout" | "stderr", chunk: Buffer) => void
 }
 
 export interface CommandResult {
@@ -16,6 +17,7 @@ export interface CommandResult {
   durationMs: number
   stdout: string
   stderr: string
+  liveOutputDiagnostic?: string
 }
 
 export class CommandFailure extends Error {
@@ -30,6 +32,7 @@ export class CommandFailure extends Error {
   readonly spawnError: Error | undefined
   readonly timedOut: boolean
   readonly aborted: boolean
+  readonly liveOutputDiagnostic: string | undefined
 
   constructor(options: {
     phase: string
@@ -43,6 +46,7 @@ export class CommandFailure extends Error {
     spawnError?: Error
     timedOut?: boolean
     aborted?: boolean
+    liveOutputDiagnostic?: string
   }) {
     const renderedCommand = options.command.map((part) => JSON.stringify(part)).join(" ")
     const status =
@@ -59,6 +63,7 @@ export class CommandFailure extends Error {
       `stdout=${JSON.stringify(options.stdout)}`,
       `stderr=${JSON.stringify(options.stderr)}`,
       options.spawnError === undefined ? undefined : `spawnError=${JSON.stringify(options.spawnError.message)}`,
+      options.liveOutputDiagnostic === undefined ? undefined : options.liveOutputDiagnostic,
     ]
       .filter((value) => value !== undefined)
       .join("; ")
@@ -75,6 +80,7 @@ export class CommandFailure extends Error {
     this.spawnError = options.spawnError
     this.timedOut = options.timedOut ?? false
     this.aborted = options.aborted ?? false
+    this.liveOutputDiagnostic = options.liveOutputDiagnostic
   }
 }
 
@@ -124,6 +130,17 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0)
     let stdoutTruncated = false
     let stderrTruncated = false
+    let outputCallback = spec.onOutput
+    let liveOutputDiagnostic: string | undefined
+    const forward = (stream: "stdout" | "stderr", chunk: Buffer) => {
+      if (outputCallback === undefined) return
+      try {
+        outputCallback(stream, chunk)
+      } catch (error) {
+        outputCallback = undefined
+        liveOutputDiagnostic = `live output stopped: ${describeError(error)}`
+      }
+    }
     let settled = false
     let timedOut = false
     let aborted = false
@@ -148,11 +165,13 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
       const captured = appendTail(stdout, chunk)
       stdout = captured.output
       stdoutTruncated ||= captured.truncated
+      forward("stdout", chunk)
     })
     child.stderr.on("data", (chunk: Buffer) => {
       const captured = appendTail(stderr, chunk)
       stderr = captured.output
       stderrTruncated ||= captured.truncated
+      forward("stderr", chunk)
     })
 
     const cleanup = () => {
@@ -178,6 +197,7 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
         stderr: capturedOutput(stderr, stderrTruncated),
         timedOut,
         aborted,
+        ...(liveOutputDiagnostic === undefined ? {} : { liveOutputDiagnostic }),
         ...(options.spawnError === undefined ? {} : { spawnError: options.spawnError }),
       })
       if (options.terminationFailures !== undefined && options.terminationFailures.length > 0) {
@@ -218,6 +238,7 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
         durationMs: Math.round(performance.now() - startedAt),
         stdout: capturedOutput(stdout, stdoutTruncated),
         stderr: capturedOutput(stderr, stderrTruncated),
+        ...(liveOutputDiagnostic === undefined ? {} : { liveOutputDiagnostic }),
       })
     }
 

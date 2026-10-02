@@ -25,6 +25,18 @@ afterEach(() => {
 })
 
 describe("repository discovery", () => {
+  test("defaults each selected build step to ten minutes and validates an override", async () => {
+    const root = fixture({ name: "fixture", version: "1.0.0" })
+    expect((await discoverRepository(root)).config.buildTimeoutMs).toBe(600_000)
+    for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "100", null]) {
+      writeManifest(root, { name: "fixture", version: "1.0.0", verifyPublishable: { buildTimeoutMs: value } })
+      await expect(discoverRepository(root)).rejects.toThrow(
+        /verifyPublishable.buildTimeoutMs must be a positive safe integer/,
+      )
+    }
+    writeManifest(root, { name: "fixture", version: "1.0.0", verifyPublishable: { buildTimeoutMs: 1234 } })
+    expect((await discoverRepository(root)).config.buildTimeoutMs).toBe(1234)
+  })
   /**
    * @failure A hard-coded roster omits newly added public packages or the private
    * workspace packages that their local-registry install depends on.
