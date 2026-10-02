@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "vitest"
 
-import { binShebangRuntime, probeRuntimesFor } from "../src/runtime.ts"
+import { binRuntimePlan, binShebangRuntime, probeRuntimesFor } from "../src/runtime.ts"
 
 describe("the runtimes a manifest's engines promise", () => {
   test("a bin runs under node when node is declared, with or without bun", () => {
@@ -32,6 +32,50 @@ describe("the runtimes a manifest's engines promise", () => {
     expect(probeRuntimesFor({ node: ">=24" }).map(({ runtime }) => runtime)).toEqual(["node"])
     expect(probeRuntimesFor({ node: ">=24", bun: ">=1.3" }).map(({ runtime }) => runtime)).toEqual(["node", "bun"])
     expect(probeRuntimesFor(undefined).map(({ runtime }) => runtime)).toEqual(["node"])
+  })
+
+  // hh #27074 (@cto 240b6f1e): the one rule for a packed bin's runtimes, shared by the hosted gate and hh's release verify.
+  const both = { node: ">=24", bun: ">=1.3.14" }
+  const declared = { package: "git-super", bin: "git-super", reason: "the CLI calls Bun APIs" }
+
+  test("a bin declared Bun-only runs under Bun, and the Node row reads not asked", () => {
+    expect(
+      binRuntimePlan({ engines: both, bin: "git-super", shebang: "#!/usr/bin/env bun", bunOnly: declared }),
+    ).toEqual({
+      rows: [
+        { bin: "git-super", runtime: "node", action: "not-asked", reason: "not asked: bin declared Bun-only" },
+        { bin: "git-super", runtime: "bun", action: "run", reason: "bin declared Bun-only: the CLI calls Bun APIs" },
+      ],
+    })
+  })
+
+  test("an undeclared Bun shebang under engines.node is refused and names the cure", () => {
+    for (const engines of [both, { node: ">=24" }]) {
+      const plan = binRuntimePlan({ engines, bin: "git-super", shebang: "#!/usr/bin/env bun" })
+      expect(plan).toEqual({
+        refused: expect.stringMatching(/^engines declares node, but bin git-super runs under Bun: .*bunOnlyBins/),
+      })
+    }
+  })
+
+  test("a Bun-only declaration with no engines.bun, or with no engines.node, is refused", () => {
+    expect(
+      binRuntimePlan({ engines: { node: ">=24" }, bin: "git-super", shebang: "#!/usr/bin/env bun", bunOnly: declared }),
+    ).toEqual({ refused: expect.stringMatching(/declared Bun-only .*declares no bun/) })
+    expect(
+      binRuntimePlan({ engines: { bun: ">=1.3" }, bin: "git-super", shebang: "#!/usr/bin/env bun", bunOnly: declared }),
+    ).toEqual({
+      refused: expect.stringMatching(/already judged under Bun; remove it from verifyPublishable\.bunOnlyBins/),
+    })
+  })
+
+  test("an undeclared node bin runs under every runtime the engines select", () => {
+    expect(binRuntimePlan({ engines: both, bin: "tool", shebang: "#!/usr/bin/env node" })).toEqual({
+      rows: [
+        { bin: "tool", runtime: "node", action: "run", reason: "engines declares node and bun" },
+        { bin: "tool", runtime: "bun", action: "run", reason: "engines declares node and bun" },
+      ],
+    })
   })
 
   test("the package exports the rule under verify-publishable/runtime", async () => {

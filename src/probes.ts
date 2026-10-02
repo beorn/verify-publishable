@@ -4,7 +4,14 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 
 import type { DiscoveredPackage, PackageManifest } from "./discovery.ts"
 import { CommandFailure, runCommand, type CommandResult, type CommandSpec } from "./process.ts"
-import { probeRuntimesFor, type ProbeRuntime, type ProbeRuntimeName } from "./runtime.ts"
+import {
+  binRuntimePlan,
+  probeRuntimesFor,
+  type BinRuntimeRow,
+  type BunOnlyBin,
+  type ProbeRuntime,
+  type ProbeRuntimeName,
+} from "./runtime.ts"
 
 export { probeRuntimesFor, type ProbeRuntime, type ProbeRuntimeName }
 
@@ -26,6 +33,8 @@ export interface FreshConsumerOptions {
   npmPath: string
   sourceRoot?: string
   consumerCheck?: ConsumerCheck
+  /** This package's bins declared Bun-only (verifyPublishable.bunOnlyBins); each must name one of its bins. */
+  bunOnlyBins?: BunOnlyBin[]
   abortSignal?: AbortSignal
 }
 
@@ -34,11 +43,11 @@ export interface FreshConsumerResult {
   version: string
   specifiers: string[]
   bins: string[]
+  /** Per bin and runtime: whether its --help ran there, or was not asked and why (hh #27074). */
+  binRuntimes: BinRuntimeRow[]
   consumerCheckRan: boolean
   runtimes: ProbeRuntime[]
 }
-
-const BUN_SHEBANG = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?bun(?:\s|$)/
 
 export class ProbeFailure extends Error {
   readonly phase: string
@@ -458,22 +467,27 @@ async function selectedBun(
   return { path: bunPath, version: verdict.version }
 }
 
-async function refuseBunShebang(
+/** The runtimes that run this installed bin's --help, from runtime.ts's one rule; a refusal fails the bin-runtime phase. */
+async function planBinRuntimes(
   identity: PackageIdentity,
   consumerRoot: string,
   binName: string,
   binPath: string,
-): Promise<void> {
+  engines: unknown,
+  bunOnly: BunOnlyBin | undefined,
+): Promise<BinRuntimeRow[]> {
   const target = await realpath(binPath)
-  const firstLine = (await readFile(target, "utf8")).split("\n", 1)[0] ?? ""
-  if (BUN_SHEBANG.test(firstLine)) {
+  const shebang = (await readFile(target, "utf8")).split("\n", 1)[0] ?? ""
+  const plan = binRuntimePlan({ engines, bin: binName, shebang, ...(bunOnly === undefined ? {} : { bunOnly }) })
+  if ("refused" in plan) {
     throw localFailure(identity, {
       phase: "bin-runtime",
       command: [binPath, "--help"],
       cwd: consumerRoot,
-      stderr: `engines declares node, but bin ${binName} runs under Bun: target=${target} shebang=${JSON.stringify(firstLine)}`,
+      stderr: `${plan.refused}; target=${target}`,
     })
   }
+  return plan.rows
 }
 
 export async function probeFreshConsumer(options: FreshConsumerOptions): Promise<FreshConsumerResult> {
@@ -621,6 +635,17 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
 
     const packageRoot = packageDirectory(consumerRoot, identity.name)
     const bins = declaredBins(identity.name, manifest.bin)
+    for (const declaration of options.bunOnlyBins ?? []) {
+      if (!bins.some(([binName]) => binName === declaration.bin)) {
+        throw localFailure(identity, {
+          phase: "bin-runtime",
+          command: [join(packageRoot, "package.json")],
+          cwd: consumerRoot,
+          stderr: `verifyPublishable.bunOnlyBins names bin ${declaration.bin}, which ${identity.name} does not declare: bins=${JSON.stringify(bins.map(([name]) => name))}`,
+        })
+      }
+    }
+    const binRuntimes: BinRuntimeRow[] = []
     for (const [binName, relativeBin] of bins) {
       if (typeof relativeBin !== "string" || relativeBin === "") {
         throw localFailure(identity, {
@@ -639,12 +664,19 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
         "package bin",
         packageRoot,
       )
+      // A package that promises Node must not ship a bin only Bun runs, unless it declares that bin Bun-only.
+      const rows = await planBinRuntimes(
+        identity,
+        consumerRoot,
+        binName,
+        binPath,
+        manifest.engines,
+        options.bunOnlyBins?.find((declaration) => declaration.bin === binName),
+      )
+      binRuntimes.push(...rows)
       for (const probe of runtimes) {
+        if (rows.find((row) => row.runtime === probe.runtime)?.action !== "run") continue
         if (probe.runtime === "node") {
-          // A package that promises Node must not ship a bin only Bun runs (no-engines packages keep today's probe).
-          if (typeof (manifest.engines as Record<string, unknown> | undefined)?.node === "string") {
-            await refuseBunShebang(identity, consumerRoot, binName, binPath)
-          }
           await runProbe({ phase: "bin-help", command: binPath, args: ["--help"], cwd: consumerRoot, env: probe.env })
           continue
         }
@@ -685,6 +717,7 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
       version: identity.version,
       specifiers,
       bins: bins.map(([name]) => name),
+      binRuntimes,
       consumerCheckRan: options.consumerCheck !== undefined,
       runtimes: runtimes.map(({ runtime, version, reason }) => ({ runtime, version, reason })),
     }

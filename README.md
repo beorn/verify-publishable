@@ -54,7 +54,8 @@ The optional root configuration is strict—unknown keys and malformed values fa
         "args": ["run", "consumer.test.ts"],
         "files": ["consumer.test.ts"]
       }
-    ]
+    ],
+    "bunOnlyBins": [{ "package": "example-package", "bin": "example", "reason": "the CLI calls Bun APIs" }]
   }
 }
 ```
@@ -63,6 +64,7 @@ The optional root configuration is strict—unknown keys and malformed values fa
 - `maxUnpackedBytes`: maximum public-package size reported by `npm pack --dry-run --json`; default 25 MiB.
 - `public`: exact asserted public-package names. Missing, extra, private, or non-public-access entries fail by name.
 - `checks`: at most one fresh-consumer check per asserted-public package. `files` are copied from the repository into the consumer, and `runner: "node"` runs the canonical host Node selected during preflight. Every other `runner` must resolve from that consumer's `node_modules/.bin`; path escapes and missing files or runners fail.
+- `bunOnlyBins`: bins whose package's engines declare both node and bun, but which run under Bun only (the library imports from Node; the CLI needs Bun). Each entry names a public package, one of its declared bins, and a non-empty `reason`. Bun runs that bin's `--help`, and its Node row reads `not asked: bin declared Bun-only`. Without a declaration, a Bun shebang under `engines.node` fails the `bin-runtime` phase. A declaration whose package declares no `engines.bun`, or no `engines.node`, or no such bin, also fails. The rule is exported as `binRuntimePlan` from `verify-publishable/runtime`, so a local release verify applies the same rule to the same tarball.
 
 The normal phase order is build, size inspection, pnpm pack, packed manifest target checks, strict Publint, ATTW's Node 16 compatibility profile (with only `cjs-resolves-to-esm` ignored), isolated publication, the served-integrity check, fresh npm install with engine enforcement, development and production imports, declared-bin `--help`, and the optional consumer check. The same tarball bytes are checked, published, and hashed. The registry runs in two phases on one storage: `publish` keeps the local packages off the npmjs uplink, so a version that is already released still publishes locally; `probe` restarts with the uplink so consumers resolve prior versions of local packages. Before any probe, every local package's served `dist.integrity` must equal its packed tarball's, or the gate refuses with `LOCAL_ARTIFACT_CONTRADICTED`, naming both hashes.
 

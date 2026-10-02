@@ -10,6 +10,7 @@ import { discoverRepository, type PackageManifest } from "./discovery.ts"
 import { assertPackShape } from "./pack-shape.ts"
 import { resolveHostTools } from "./preflight.ts"
 import { probeFreshConsumer, type ProbeRuntime } from "./probes.ts"
+import type { BinRuntimeRow } from "./runtime.ts"
 import { publishTarballs } from "./publish.ts"
 import { startRegistry, type RegistryHandle } from "./registry.ts"
 import { assertServedIntegrity, tarballIntegrity } from "./served-integrity.ts"
@@ -34,6 +35,8 @@ export interface VerifiedPackageResult {
   sha512?: string
   specifiers: string[]
   bins: string[]
+  /** Per bin and runtime: whether its --help ran there, or was not asked and why (hh #27074). */
+  binRuntimes: BinRuntimeRow[]
   consumerCheckRan: boolean
   /** The runtimes the consumer probes ran under, each with its version and the engines reason that selected it. */
   runtimes: ProbeRuntime[]
@@ -270,6 +273,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       const tarball = packed.get(pkg.name)
       if (tarball === undefined) throw new Error(`PACK_ARTIFACT_MISSING: package=${pkg.name} packed=[]`)
       const consumerCheck = repository.config.checks?.find((check) => check.package === pkg.name)
+      const bunOnlyBins = repository.config.bunOnlyBins?.filter((declaration) => declaration.package === pkg.name)
       const probe = await probeFreshConsumer({
         package: pkg,
         packedManifest: tarball.artifact.manifest as PackageManifest,
@@ -281,6 +285,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
         sourceRoot: root,
         abortSignal: registry.abortSignal,
         ...(consumerCheck === undefined ? {} : { consumerCheck }),
+        ...(bunOnlyBins === undefined || bunOnlyBins.length === 0 ? {} : { bunOnlyBins }),
       })
       registry.assertAlive()
       const unpackedSize = sizes.get(pkg.name)
@@ -294,6 +299,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
         sha256: await sha256(tarball.tarballPath),
         specifiers: probe.specifiers,
         bins: probe.bins,
+        binRuntimes: probe.binRuntimes,
         consumerCheckRan: probe.consumerCheckRan,
         runtimes: probe.runtimes,
       })

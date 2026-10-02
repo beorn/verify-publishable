@@ -141,6 +141,9 @@ describe("real repository verification", () => {
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         specifiers: ["@verify-publishable-fixture/e2e-public"],
         bins: ["verify-publishable-e2e"],
+        binRuntimes: [
+          { bin: "verify-publishable-e2e", runtime: "node", action: "run", reason: "engines declares node only" },
+        ],
         consumerCheckRan: false,
         runtimes: [{ runtime: "node", version: result.nodeVersion, reason: "engines declares node only" }],
       },

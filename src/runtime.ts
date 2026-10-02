@@ -54,3 +54,65 @@ export function binShebangRuntime(engines: unknown): ProbeRuntimeName {
     `ENGINES_RUNTIME_UNKNOWN: engines=${JSON.stringify(engines)} declares neither node nor bun, so no bin runtime is promised`,
   )
 }
+
+/** A first line naming Bun as the interpreter: `#!/usr/bin/env bun`, `#!/path/to/bun`, with or without env flags. */
+export const BUN_SHEBANG = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?bun(?:\s|$)/
+
+/**
+ * A packed bin the manifest declares Bun-only although its engines promise node (`verifyPublishable.bunOnlyBins`,
+ * hh #27074, @cto 240b6f1e): the library imports from Node, and this CLI runs under Bun. The reason is required.
+ */
+export interface BunOnlyBin {
+  package: string
+  bin: string
+  reason: string
+}
+
+/** One runtime's verdict on one packed bin's `--help`: run it there, or record that it was not asked and why. */
+export interface BinRuntimeRow {
+  bin: string
+  runtime: ProbeRuntimeName
+  action: "run" | "not-asked"
+  reason: string
+}
+
+/**
+ * Which runtimes run a packed bin's `--help`, the one rule both the hosted gate and hh's local release verify apply.
+ * Undeclared: every runtime the engines select runs it, and a Bun shebang under engines.node is refused, since a Node
+ * user cannot opt into Bun. Declared Bun-only: Bun runs it and the Node row reads "not asked: bin declared Bun-only";
+ * the declaration is refused when engines declares no bun (nothing runs it) or no node (it is redundant).
+ */
+export function binRuntimePlan(input: {
+  engines: unknown
+  bin: string
+  shebang: string
+  bunOnly?: BunOnlyBin
+}): { rows: BinRuntimeRow[] } | { refused: string } {
+  const { node, bun } = declaredEngines(input.engines)
+  const selected = probeRuntimesFor(input.engines)
+  if (input.bunOnly !== undefined) {
+    if (!bun) {
+      return {
+        refused: `bin ${input.bin} is declared Bun-only (${input.bunOnly.reason}), but engines=${JSON.stringify(input.engines)} declares no bun, so nothing would run it`,
+      }
+    }
+    if (!node) {
+      return {
+        refused: `bin ${input.bin} is declared Bun-only, but engines=${JSON.stringify(input.engines)} declares bun and no node, so it is already judged under Bun; remove it from verifyPublishable.bunOnlyBins`,
+      }
+    }
+    return {
+      rows: selected.map(({ runtime }) =>
+        runtime === "node"
+          ? { bin: input.bin, runtime, action: "not-asked", reason: "not asked: bin declared Bun-only" }
+          : { bin: input.bin, runtime, action: "run", reason: `bin declared Bun-only: ${input.bunOnly!.reason}` },
+      ),
+    }
+  }
+  if (node && BUN_SHEBANG.test(input.shebang)) {
+    return {
+      refused: `engines declares node, but bin ${input.bin} runs under Bun: shebang=${JSON.stringify(input.shebang)}; ship a Node-runnable bin, or declare it in verifyPublishable.bunOnlyBins with a reason`,
+    }
+  }
+  return { rows: selected.map(({ runtime, reason }) => ({ bin: input.bin, runtime, action: "run", reason })) }
+}

@@ -154,6 +154,50 @@ describe("repository discovery", () => {
    * @level l0
    * @consumer verifyPublishable configuration
    */
+  /**
+   * @failure A Bun-only bin declaration with no reason, a typo'd key, or a package that is not public here silently
+   * waives the Node bin check for nothing (hh #27074, @cto 240b6f1e).
+   * @level l0
+   * @consumer verifyPublishable.bunOnlyBins
+   */
+  test("reads bunOnlyBins with a reason per bin, and refuses malformed or foreign declarations", async () => {
+    const declaration = { package: "fixture-root", bin: "fixture", reason: "the CLI calls Bun APIs" }
+    const accepted = fixture({
+      name: "fixture-root",
+      version: "1.0.0",
+      verifyPublishable: { bunOnlyBins: [declaration] },
+    })
+    await expect(discoverRepository(accepted)).resolves.toMatchObject({ config: { bunOnlyBins: [declaration] } })
+
+    const noReason = fixture({
+      name: "fixture-root",
+      version: "1.0.0",
+      verifyPublishable: { bunOnlyBins: [{ package: "fixture-root", bin: "fixture", reason: " " }] },
+    })
+    await expect(discoverRepository(noReason)).rejects.toThrow(/bunOnlyBins\[0\]\.reason must be a non-empty string/)
+
+    const unknownKey = fixture({
+      name: "fixture-root",
+      version: "1.0.0",
+      verifyPublishable: { bunOnlyBins: [{ ...declaration, runtime: "bun" }] },
+    })
+    await expect(discoverRepository(unknownKey)).rejects.toThrow(/unknown verifyPublishable\.bunOnlyBins key.*runtime/)
+
+    const duplicate = fixture({
+      name: "fixture-root",
+      version: "1.0.0",
+      verifyPublishable: { bunOnlyBins: [declaration, declaration] },
+    })
+    await expect(discoverRepository(duplicate)).rejects.toThrow(/duplicate package bins.*fixture-root:fixture/)
+
+    const foreign = fixture({
+      name: "fixture-root",
+      version: "1.0.0",
+      verifyPublishable: { bunOnlyBins: [{ ...declaration, package: "other" }] },
+    })
+    await expect(discoverRepository(foreign)).rejects.toThrow(/names package other, which is not a public package here/)
+  })
+
   test("refuses unknown configuration keys by name", async () => {
     const root = fixture({
       name: "fixture-root",

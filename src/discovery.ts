@@ -1,6 +1,8 @@
 import { realpath } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
+import type { BunOnlyBin } from "./runtime.ts"
+
 export const DEFAULT_MAX_UNPACKED_BYTES = 25 * 1024 * 1024
 
 export interface VerifyPublishableConfig {
@@ -8,6 +10,8 @@ export interface VerifyPublishableConfig {
   checks?: ConsumerCheckConfig[]
   maxUnpackedBytes: number
   public?: string[]
+  /** Bins declared Bun-only although their package's engines promise node (hh #27074, @cto 240b6f1e). */
+  bunOnlyBins?: BunOnlyBin[]
 }
 
 export interface ConsumerCheckConfig {
@@ -51,7 +55,8 @@ export interface RepositoryPlan {
   excluded: string[]
 }
 
-const CONFIG_KEYS = new Set(["build", "checks", "maxUnpackedBytes", "public"])
+const CONFIG_KEYS = new Set(["build", "bunOnlyBins", "checks", "maxUnpackedBytes", "public"])
+const BUN_ONLY_BIN_KEYS = ["package", "bin", "reason"] as const
 const CHECK_KEYS = new Set(["package", "runner", "args", "files"])
 
 function describeScope(searched: string[], excluded: string[]): string {
@@ -109,6 +114,32 @@ function readConfig(manifest: Record<string, unknown>): VerifyPublishableConfig 
     const names = object.public as string[]
     if (new Set(names).size !== names.length) throw new Error("verifyPublishable.public contains duplicate names")
     config.public = [...names].sort()
+  }
+  if (object.bunOnlyBins !== undefined) {
+    if (!Array.isArray(object.bunOnlyBins)) throw new Error("verifyPublishable.bunOnlyBins must be an array")
+    config.bunOnlyBins = object.bunOnlyBins.map((value, index) => {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`verifyPublishable.bunOnlyBins[${index}] must be an object`)
+      }
+      const entry = value as Record<string, unknown>
+      for (const key of Object.keys(entry)) {
+        if (!(BUN_ONLY_BIN_KEYS as readonly string[]).includes(key)) {
+          throw new Error(`unknown verifyPublishable.bunOnlyBins key: index=${index} key=${key}`)
+        }
+      }
+      for (const key of BUN_ONLY_BIN_KEYS) {
+        if (typeof entry[key] !== "string" || entry[key].trim() === "") {
+          throw new Error(`verifyPublishable.bunOnlyBins[${index}].${key} must be a non-empty string`)
+        }
+      }
+      return { package: entry.package as string, bin: entry.bin as string, reason: entry.reason as string }
+    })
+    const declared = config.bunOnlyBins.map((entry) => `${entry.package}:${entry.bin}`)
+    if (new Set(declared).size !== declared.length) {
+      throw new Error(
+        `verifyPublishable.bunOnlyBins contains duplicate package bins: entries=${JSON.stringify(declared)}`,
+      )
+    }
   }
   if (object.checks !== undefined) {
     if (!Array.isArray(object.checks)) throw new Error("verifyPublishable.checks must be an array")
@@ -310,6 +341,13 @@ export async function discoverRepository(rootInput: string): Promise<RepositoryP
 
   if (publicPackages.length === 0) {
     throw new Error(`no public packages discovered; refusing success; ${describeScope(searched, excluded)}`)
+  }
+  for (const declaration of config.bunOnlyBins ?? []) {
+    if (!discoveredNames.includes(declaration.package)) {
+      throw new Error(
+        `verifyPublishable.bunOnlyBins names package ${declaration.package}, which is not a public package here: public=${JSON.stringify(discoveredNames)}`,
+      )
+    }
   }
 
   return { root, rootManifest, config, packages, publicPackages, searched, excluded }

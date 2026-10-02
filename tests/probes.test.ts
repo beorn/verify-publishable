@@ -25,6 +25,7 @@ import type { PackageManifest } from "../src/discovery.ts"
 import { CommandFailure } from "../src/process.ts"
 import { findHostExecutable } from "../src/preflight.ts"
 import { literalSpecifiers, ProbeFailure, probeFreshConsumer } from "../src/probes.ts"
+import type { BunOnlyBin } from "../src/runtime.ts"
 
 const roots: string[] = []
 const configuredNodePath = process.env.NODE_FOR_TESTS
@@ -324,6 +325,7 @@ describe("fresh consumer probes", () => {
       version: "1.2.3",
       specifiers: ["@fixture/public", "@fixture/public/feature", "@fixture/public/matchers"],
       bins: ["fixture"],
+      binRuntimes: [{ bin: "fixture", runtime: "node", action: "run", reason: "engines declares no runtime" }],
       consumerCheckRan: true,
       runtimes: [{ runtime: "node", version: "v24.99.0", reason: "engines declares no runtime" }],
     })
@@ -735,6 +737,67 @@ describe("probe runtimes follow the manifest's engines", () => {
       stderr: expect.stringMatching(/engines declares node, but bin fixture runs under Bun.*#!\/usr\/bin\/env bun/),
     })
     expect(existsSync(fixture.binLog)).toBe(false)
+  })
+
+  // hh #27074 (@cto 240b6f1e): a library that imports from Node may ship a CLI that runs under Bun, when it says so.
+  async function probeDeclared(fixture: ReturnType<typeof fakeNpm>, bunPath: string, bunOnlyBins: BunOnlyBin[]) {
+    const npmrcPath = join(temporaryDirectory("npmrc"), "consumer.npmrc")
+    writeFileSync(npmrcPath, "registry=http://127.0.0.1:4873/\n")
+    return probeFreshConsumer({
+      package: { name: "@fixture/public", version: "1.2.3" },
+      packedManifest: fixture.packedManifest,
+      registryUrl: "http://127.0.0.1:4873/",
+      npmrcPath,
+      nodePath: fixture.nodePath,
+      bunPath,
+      npmPath: fixture.npmPath,
+      bunOnlyBins,
+    })
+  }
+
+  test("a bin declared Bun-only runs under Bun alone, and its Node row reads not asked", async () => {
+    const fixture = fakeNpm({ engines: { node: ">=24", bun: ">=1.0.0" }, binShebang: "bun" })
+    const bun = fakeBun()
+    const result = await probeDeclared(fixture, bun.bunPath, [
+      { package: "@fixture/public", bin: "fixture", reason: "the CLI calls Bun APIs" },
+    ])
+    expect(result.binRuntimes).toEqual([
+      { bin: "fixture", runtime: "node", action: "not-asked", reason: "not asked: bin declared Bun-only" },
+      { bin: "fixture", runtime: "bun", action: "run", reason: "bin declared Bun-only: the CLI calls Bun APIs" },
+    ])
+    expect(readFileSync(fixture.binLog, "utf8")).toBe("--help\n")
+    const nodeCalls = lines(fixture.nodeLog).map((line) => JSON.parse(line) as string[])
+    expect(nodeCalls.some(([script]) => script?.endsWith("/node_modules/.bin/fixture"))).toBe(false)
+    // The library is still imported under both runtimes.
+    expect(lines(fixture.runtimeLog).sort()).toEqual([
+      "development:bun",
+      "development:node",
+      "production:bun",
+      "production:node",
+    ])
+  })
+
+  test("an undeclared Bun bin under node and bun engines is still refused", async () => {
+    const fixture = fakeNpm({ engines: { node: ">=24", bun: ">=1.0.0" }, binShebang: "bun" })
+    const bun = fakeBun()
+    await expect(probeDeclared(fixture, bun.bunPath, [])).rejects.toMatchObject({
+      name: "ProbeFailure",
+      phase: "bin-runtime",
+      stderr: expect.stringMatching(/engines declares node, but bin fixture runs under Bun.*bunOnlyBins/),
+    })
+    expect(existsSync(fixture.binLog)).toBe(false)
+  })
+
+  test("a Bun-only declaration naming a bin the package lacks is refused", async () => {
+    const fixture = fakeNpm({ engines: { node: ">=24", bun: ">=1.0.0" }, binShebang: "bun" })
+    const bun = fakeBun()
+    await expect(
+      probeDeclared(fixture, bun.bunPath, [{ package: "@fixture/public", bin: "other", reason: "typo" }]),
+    ).rejects.toMatchObject({
+      name: "ProbeFailure",
+      phase: "bin-runtime",
+      stderr: expect.stringMatching(/bunOnlyBins names bin other, which @fixture\/public does not declare/),
+    })
   })
 })
 
