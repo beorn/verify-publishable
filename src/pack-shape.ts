@@ -55,6 +55,35 @@ function manifestEntries(manifest: Record<string, unknown>): Entry[] {
   ]
 }
 
+/** Shared export-target classification; asset targets require archive/source proof before checks are omitted. */
+export function exportContract(manifest: Record<string, unknown>): {
+  moduleSubpaths: string[]
+  assetSubpaths: string[]
+  assetTargets: string[]
+} {
+  const raw = manifest.exports
+  const subpaths: Array<[string, unknown]> =
+    raw !== null &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    Object.keys(raw).some((key) => key.startsWith("."))
+      ? Object.entries(raw).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      : [[".", raw]]
+  const moduleSubpaths: string[] = []
+  const assetSubpaths: string[] = []
+  const assetTargets = new Set<string>()
+  const cssTarget = (target: string): boolean =>
+    target.startsWith("./") && target.endsWith(".css") && !target.includes("*")
+  for (const [subpath, value] of subpaths) {
+    if (subpath.includes("*") || (subpath !== "." && (!subpath.startsWith("./") || subpath.length <= 2))) continue
+    const targets = exportEntries("exports", value).map(({ target }) => target)
+    for (const target of targets) if (cssTarget(target)) assetTargets.add(target)
+    if (targets.length > 0 && targets.every(cssTarget)) assetSubpaths.push(subpath)
+    else moduleSubpaths.push(subpath)
+  }
+  return { moduleSubpaths, assetSubpaths, assetTargets: [...assetTargets].sort() }
+}
+
 /** Enumerate every file target without claiming a wildcard pattern names one particular file. */
 export function packShapeFindings(artifact: PackedArtifact): PackShapeFinding[] {
   const findings: PackShapeFinding[] = []

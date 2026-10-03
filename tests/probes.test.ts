@@ -828,6 +828,16 @@ describe("probe runtimes follow the manifest's engines", () => {
 })
 
 describe("literal import specifiers", () => {
+  // CSS is a published asset, not a JavaScript import; mixed conditions must retain their module obligation.
+  test("CSS-only exports stay out of JavaScript imports while mixed exports remain", () => {
+    expect(
+      literalSpecifiers("p", {
+        ".": "./dist/index.mjs",
+        "./styles": { default: "./src/style.css" },
+        "./mixed": { import: "./dist/mixed.mjs", browser: "./src/style.css" },
+      }),
+    ).toEqual(["p", "p/mixed"])
+  })
   /**
    * @failure A package whose exports map lists subpaths but no "." fails its fresh-consumer probe on the bare
    * package name, which Node refuses by design (ERR_PACKAGE_PATH_NOT_EXPORTED) and the manifest never promised.

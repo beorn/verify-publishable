@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import type { DiscoveredPackage, PackageManifest } from "./discovery.ts"
+import { exportContract } from "./pack-shape.ts"
 import { CommandFailure, runCommand, type CommandResult, type CommandSpec } from "./process.ts"
 import {
   binRuntimePlan,
@@ -263,23 +264,9 @@ async function installedManifest(identity: PackageIdentity, consumerRoot: string
  * every literal subpath. A string, array or condition-object exports value is the root.
  */
 export function literalSpecifiers(packageName: string, exportsField: unknown): string[] {
-  if (
-    exportsField === undefined ||
-    exportsField === null ||
-    typeof exportsField !== "object" ||
-    Array.isArray(exportsField)
-  ) {
-    return [packageName]
-  }
-  const keys = Object.keys(exportsField as Record<string, unknown>)
-  if (!keys.some((key) => key.startsWith("."))) return [packageName]
-  const specifiers = new Set<string>()
-  if (keys.includes(".")) specifiers.add(packageName)
-  for (const subpath of keys.sort()) {
-    if (subpath === "." || subpath.includes("*")) continue
-    if (subpath.startsWith("./") && subpath.length > 2) specifiers.add(`${packageName}/${subpath.slice(2)}`)
-  }
-  return [...specifiers]
+  return exportContract({ exports: exportsField }).moduleSubpaths.map((subpath) =>
+    subpath === "." ? packageName : `${packageName}/${subpath.slice(2)}`,
+  )
 }
 
 function declaredBins(packageName: string, rawBin: PackageManifest["bin"]): Array<[string, string]> {
