@@ -47,6 +47,7 @@ interface FakeNpmOptions {
   linkVitestBin?: boolean
   nodeVersion?: string
   registerMatcher?: boolean
+  requiresOptionalPeer?: boolean
 }
 
 function temporaryDirectory(label: string): string {
@@ -94,6 +95,12 @@ function fakeNpm(options: FakeNpmOptions = {}): {
     },
     bin: { fixture: "./cli.mjs" },
     ...(options.engines === undefined ? {} : { engines: options.engines }),
+    ...(options.requiresOptionalPeer === true
+      ? {
+          peerDependencies: { "isomorphic-git": "^1.38.7", "ordinary-peer": "^2.0.0" },
+          peerDependenciesMeta: { "isomorphic-git": { optional: true } },
+        }
+      : {}),
   }
   executable(
     nodePath,
@@ -135,9 +142,15 @@ if (args[0] !== "install") process.exit(90)
 const packageRoot = join(cwd, "node_modules", "@fixture", "public")
 mkdirSync(join(cwd, "node_modules", ".bin"), { recursive: true })
 mkdirSync(join(packageRoot, "generated"), { recursive: true })
+if (args.includes("isomorphic-git@^1.38.7")) {
+  const peerRoot = join(cwd, "node_modules", "isomorphic-git")
+  mkdirSync(peerRoot, { recursive: true })
+  writeFileSync(join(peerRoot, "package.json"), '{"name":"isomorphic-git","version":"1.42.5","type":"module","exports":"./index.mjs"}')
+  writeFileSync(join(peerRoot, "index.mjs"), 'export const installed = true\\n')
+}
 writeFileSync(join(packageRoot, "package.json"), ${JSON.stringify(`${JSON.stringify(manifest)}\n`)})
 writeFileSync(join(packageRoot, "index.mjs"), ${JSON.stringify(`import { appendFileSync } from "node:fs"\nconst runtime = typeof Bun === "undefined" ? "node" : "bun"\nappendFileSync(${JSON.stringify(runtimeLog)}, process.env.NODE_ENV + ":" + runtime + "\\n")\n${options.rootFailsUnderBun === true ? 'if (runtime === "bun") throw new Error("fixture root cannot load under Bun")\n' : ""}appendFileSync(${JSON.stringify(importLog)}, process.env.NODE_ENV + ":root\\n")\nexport const root = true\n`)})
-writeFileSync(join(packageRoot, "feature.mjs"), ${JSON.stringify(`import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(importLog)}, process.env.NODE_ENV + ":feature\\n")\n${options.emptyFeature === true ? "export {}" : "export const feature = true"}\n`)})
+writeFileSync(join(packageRoot, "feature.mjs"), ${JSON.stringify(`${options.requiresOptionalPeer === true ? 'import "isomorphic-git"\n' : ""}import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(importLog)}, process.env.NODE_ENV + ":feature\\n")\n${options.emptyFeature === true ? "export {}" : "export const feature = true"}\n`)})
 writeFileSync(join(packageRoot, "matchers.mjs"), ${JSON.stringify(`import { appendFileSync } from "node:fs"\nif (process.env.NODE_ENV) appendFileSync(${JSON.stringify(importLog)}, process.env.NODE_ENV + ":matchers\\n")\nif (globalThis.__VITEST_CONTEXT__ === true && ${options.registerMatcher !== false}) globalThis.__FIXTURE_MATCHER__ = true\nexport const terminalMatchers = {}\n`)})
 writeFileSync(join(packageRoot, "cli.mjs"), ${JSON.stringify(`#!/usr/bin/env ${options.binShebang ?? "node"}\nimport { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(binLog)}, process.argv.slice(2).join(" ") + "\\n")\nif (process.argv[2] !== "--help") process.exit(91)\nconsole.log("Usage: fixture")\n`)})
 chmodSync(join(packageRoot, "cli.mjs"), 0o755)
@@ -600,6 +613,19 @@ describe("probe runtimes follow the manifest's engines", () => {
       npmPath: fixture.npmPath,
     })
   }
+
+  // @failure 27163: an optional export cannot import its declared optional peer in the isolated consumer.
+  // @level l1 @consumer exported optional integrations @testonly none
+  test("installs declared optional peers before probing every export without changing the package contract", async () => {
+    const fixture = fakeNpm({ requiresOptionalPeer: true })
+    const before = JSON.stringify(fixture.packedManifest)
+    const result = await probe(fixture)
+    expect(result.specifiers).toContain("@fixture/public/feature")
+    const install = JSON.parse(readFileSync(fixture.commandLog, "utf8").trim().split("\n")[1]!) as { args: string[] }
+    expect(install.args).toContain("isomorphic-git@^1.38.7")
+    expect(install.args).not.toContain("ordinary-peer@^2.0.0")
+    expect(JSON.stringify(fixture.packedManifest)).toBe(before)
+  })
 
   test("a bun-only package is imported and its bin run under Bun, and never under Node", async () => {
     const fixture = fakeNpm({ engines: { bun: ">=1.0.0" }, binShebang: "bun" })

@@ -191,6 +191,27 @@ function packageDirectory(consumerRoot: string, packageName: string): string {
   return path
 }
 
+/** Probe optional integrations with their declared peers; npm already installs required peers. */
+function optionalPeerSpecs(manifest: PackageManifest): string[] {
+  const metadata = manifest.peerDependenciesMeta
+  if (metadata === undefined) return []
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw new Error("peerDependenciesMeta must be an object")
+  }
+  return Object.entries(manifest.peerDependencies ?? {}).flatMap(([name, version]) => {
+    const entry = (metadata as Record<string, unknown>)[name]
+    if (entry === undefined) return []
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`peerDependenciesMeta[${JSON.stringify(name)}] must be an object`)
+    }
+    if ((entry as Record<string, unknown>).optional !== true) return []
+    if (typeof version !== "string" || version.trim() === "") {
+      throw new Error(`optional peer ${JSON.stringify(name)} must declare a nonempty version`)
+    }
+    return [`${name}@${version}`]
+  })
+}
+
 async function installedManifest(identity: PackageIdentity, consumerRoot: string): Promise<PackageManifest> {
   const manifestPath = join(packageDirectory(consumerRoot, identity.name), "package.json")
   let source: string
@@ -574,6 +595,7 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
         "--registry",
         options.registryUrl,
         `${identity.name}@${identity.version}`,
+        ...optionalPeerSpecs(options.packedManifest),
       ],
       cwd: consumerRoot,
       env: npmEnvironment,
