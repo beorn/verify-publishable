@@ -58,11 +58,27 @@ function manifestEntries(manifest: Record<string, unknown>): Entry[] {
 }
 
 /** Shared export-target classification; asset targets require archive/source proof before checks are omitted. */
-export function exportContract(manifest: Record<string, unknown>): {
+export function exportContract(
+  manifest: Record<string, unknown>,
+  entries?: ReadonlySet<string>,
+): {
+  classification?: "bin-only"
   moduleSubpaths: string[]
   assetSubpaths: string[]
   assetTargets: string[]
 } {
+  const bins = manifestEntries(manifest).filter(
+    ({ field }) => field === "bin" || field.startsWith("bin.") || field.startsWith("bin["),
+  )
+  if (
+    entries !== undefined &&
+    bins.length > 0 &&
+    bins.every(({ target }) => target.trim() !== "") &&
+    ["exports", "main", "module", "browser", "types", "typings"].every((field) => manifest[field] === undefined) &&
+    ![...entries].some((path) => path.startsWith("index."))
+  ) {
+    return { classification: "bin-only", moduleSubpaths: [], assetSubpaths: [], assetTargets: [] }
+  }
   const raw = manifest.exports
   const subpaths: Array<[string, unknown]> =
     raw !== null &&

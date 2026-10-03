@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { gzipSync } from "node:zlib"
 
-import { afterEach, describe, expect, test } from "vitest"
+import { afterEach, describe, expect, test, vi } from "vitest"
 
 import {
   verifyPackedPayload,
@@ -79,6 +79,55 @@ afterEach(() => {
 
 /** CSS and raw-plugin exclusions require archive/source equality; an index module or missing ordinary root cannot be excused. */
 describe("packed asset contracts", () => {
+  // @failure A bin-only CLI is rejected for lacking imports, or a library silently loses ATTW.
+  // @level l0 @consumer cold packed-package verification
+  test("bin-only qualification explains ATTW applicability and preserves every library contract", async () => {
+    const root = temporaryDirectory()
+    const pkg = fixturePackage(root)
+    const manifest = { bin: { fixture: "./bin/fixture.mjs" } }
+    const entries = new Set(["package.json", "bin/fixture.mjs"])
+    const payload = verifyPackedPayload(pkg, { manifest, entries })
+    expect(payload).toMatchObject({
+      classification: "bin-only",
+      moduleSubpaths: [],
+      moduleChecks: {
+        action: "not-asked",
+        reason: expect.stringMatching(/bin-only.*fixture.mjs.*no root index.*ATTW import check not applicable/),
+      },
+    })
+    const commands: CommandSpec[] = []
+    writeFileSync(join(root, "fixture.tgz"), "fixture")
+    const printed = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      await runTarballChecks(pkg, {
+        attw: resolvedTool("@arethetypeswrong/cli", "attw", join(root, "attw.js")),
+        publint: resolvedTool("publint", "publint", join(root, "publint.js")),
+        nodePath: process.execPath,
+        tarballPath: join(root, "fixture.tgz"),
+        payload,
+        run: async (spec) => {
+          commands.push(spec)
+          return commandResult()
+        },
+      })
+      expect(printed).toHaveBeenCalledWith(
+        expect.stringMatching(/@fixture\/package: bin-only.*ATTW import check not applicable/),
+      )
+    } finally {
+      printed.mockRestore()
+    }
+    expect(commands.map(({ phase }) => phase)).toEqual(["publint:@fixture/package"])
+    for (const field of ["exports", "main", "module", "browser", "types", "typings"]) {
+      const library = verifyPackedPayload(pkg, { manifest: { ...manifest, [field]: "./missing.js" }, entries })
+      expect(library.moduleChecks.action, field).toBe("run")
+      expect(library.moduleSubpaths, field).toEqual(["."])
+    }
+    expect(verifyPackedPayload(pkg, { manifest, entries: new Set([...entries, "index.js"]) }).moduleChecks.action).toBe(
+      "run",
+    )
+    expect(verifyPackedPayload(pkg, { manifest: { bin: {} }, entries }).moduleChecks.action).toBe("run")
+  })
+
   test("CSS bytes are proved and only CSS-only entrypoints exclude module checks", () => {
     const root = temporaryDirectory()
     const pkg = fixturePackage(root)

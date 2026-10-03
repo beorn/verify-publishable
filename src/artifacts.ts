@@ -43,7 +43,7 @@ export interface PayloadVerification extends ReturnType<typeof exportContract> {
 
 /** Qualify the exact bytes before the shared export classification can omit a module check. */
 export function verifyPackedPayload(pkg: ArtifactPackage, artifact: PackedArtifact): PayloadVerification {
-  const contract = exportContract(artifact.manifest)
+  const contract = exportContract(artifact.manifest, artifact.entries)
   const marker = ".claude-plugin/plugin.json"
   const noModuleFields = ["exports", "main", "module", "browser", "types", "typings", "bin"].every(
     (field) => artifact.manifest[field] === undefined,
@@ -112,11 +112,16 @@ export function verifyPackedPayload(pkg: ArtifactPackage, artifact: PackedArtifa
     moduleChecks:
       moduleSubpaths.length > 0
         ? { action: "run", reason: "package promises module entrypoints" }
-        : rawPlugin
-          ? { action: "not-asked", reason: "raw plugin payload verified byte-for-byte" }
-          : contract.assetSubpaths.length > 0
-            ? { action: "not-asked", reason: "CSS-only entrypoints verified byte-for-byte" }
-            : { action: "run", reason: "no evidenced non-module contract; existing module checks remain" },
+        : contract.classification === "bin-only"
+          ? {
+              action: "not-asked",
+              reason: `bin-only (bin ${JSON.stringify(artifact.manifest.bin)}; no exports/main/module/browser/types/typings; no root index) — ATTW import check not applicable`,
+            }
+          : rawPlugin
+            ? { action: "not-asked", reason: "raw plugin payload verified byte-for-byte" }
+            : contract.assetSubpaths.length > 0
+              ? { action: "not-asked", reason: "CSS-only entrypoints verified byte-for-byte" }
+              : { action: "run", reason: "no evidenced non-module contract; existing module checks remain" },
   }
 }
 
@@ -451,6 +456,9 @@ export async function runTarballChecks(
     args: [options.publint.binPath, options.tarballPath, "--strict"],
     cwd: pkg.dir,
   })
+  if (options.payload?.classification === "bin-only") {
+    process.stderr.write(`${pkg.name}: ${options.payload.moduleChecks.reason}\n`)
+  }
   const attw =
     options.payload?.moduleChecks.action === "not-asked"
       ? null
