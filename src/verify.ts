@@ -4,7 +4,14 @@ import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { inspectNpmPack, packPackage, runTarballChecks, type PackedTarball } from "./artifacts.ts"
+import {
+  inspectNpmPack,
+  packPackage,
+  runTarballChecks,
+  verifyPackedPayload,
+  type PackedTarball,
+  type PayloadVerification,
+} from "./artifacts.ts"
 import { executeBuild, readLiveOutputLoss, type BuildMode, type LiveOutputLoss } from "./build.ts"
 import { discoverRepository, type PackageManifest } from "./discovery.ts"
 import { assertPackShape } from "./pack-shape.ts"
@@ -40,6 +47,8 @@ export interface VerifiedPackageResult {
   consumerCheckRan: boolean
   /** The runtimes the consumer probes ran under, each with its version and the engines reason that selected it. */
   runtimes: ProbeRuntime[]
+  assets?: PayloadVerification["assets"]
+  moduleChecks?: PayloadVerification["moduleChecks"]
 }
 
 export interface VerifyRepositoryResult {
@@ -191,12 +200,19 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       sizes.set(pkg.name, record.unpackedSize)
     }
 
+    const payloads = new Map<string, PayloadVerification>()
     const packed = await withSandboxManifests(repository.packages, async () => {
       const results = new Map<string, PackedTarball>()
       for (const [index, pkg] of repository.packages.entries()) {
         const destination = join(artifactRoot, String(index).padStart(4, "0"))
         await mkdir(destination)
-        results.set(pkg.name, await packPackage(pkg, { destination, nodePath: host.nodePath, pnpm: tools.pnpm }))
+        const tarball = await packPackage(pkg, { destination, nodePath: host.nodePath, pnpm: tools.pnpm })
+        payloads.set(pkg.name, verifyPackedPayload(pkg, tarball.artifact))
+        // Byte proof is complete; release the archive buffers before packing the next package.
+        results.set(pkg.name, {
+          ...tarball,
+          artifact: { manifest: tarball.artifact.manifest, entries: tarball.artifact.entries },
+        })
       }
       return results
     })
@@ -205,12 +221,15 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
     for (const pkg of repository.publicPackages) {
       const tarball = packed.get(pkg.name)
       if (tarball === undefined) throw new Error(`PACK_ARTIFACT_MISSING: package=${pkg.name} packed=[]`)
+      const payload = payloads.get(pkg.name)
+      if (payload === undefined) throw new Error(`ASSET_PROOF_MISSING: package=${pkg.name} queried=packed-packages`)
       assertPackShape(pkg.name, tarball.artifact)
       await runTarballChecks(pkg, {
         attw: tools.attw,
         nodePath: host.nodePath,
         publint: tools.publint,
         tarballPath: tarball.tarballPath,
+        payload,
       })
     }
 
@@ -274,10 +293,13 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       const tarball = packed.get(pkg.name)
       if (tarball === undefined) throw new Error(`PACK_ARTIFACT_MISSING: package=${pkg.name} packed=[]`)
       const consumerCheck = repository.config.checks?.find((check) => check.package === pkg.name)
+      const payload = payloads.get(pkg.name)
+      if (payload === undefined) throw new Error(`ASSET_PROOF_MISSING: package=${pkg.name} queried=packed-packages`)
       const bunOnlyBins = repository.config.bunOnlyBins?.filter((declaration) => declaration.package === pkg.name)
       const probe = await probeFreshConsumer({
         package: pkg,
         packedManifest: tarball.artifact.manifest as PackageManifest,
+        payload,
         registryUrl: registry.url,
         npmrcPath,
         nodePath: host.nodePath,
@@ -303,6 +325,8 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
         binRuntimes: probe.binRuntimes,
         consumerCheckRan: probe.consumerCheckRan,
         runtimes: probe.runtimes,
+        assets: payload.assets,
+        moduleChecks: payload.moduleChecks,
       })
     }
 

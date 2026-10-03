@@ -4,7 +4,7 @@
  * @level l0
  * @consumer publishable artifact verification
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,6 +13,7 @@ import { gzipSync } from "node:zlib"
 import { afterEach, describe, expect, test } from "vitest"
 
 import {
+  verifyPackedPayload,
   inspectNpmPack,
   packPackage,
   runTarballChecks,
@@ -74,6 +75,60 @@ function paxPath(path: string) {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+/** CSS and raw-plugin exclusions require archive/source equality; an index module or missing ordinary root cannot be excused. */
+describe("packed asset contracts", () => {
+  test("CSS bytes are proved and only CSS-only entrypoints exclude module checks", () => {
+    const root = temporaryDirectory()
+    const pkg = fixturePackage(root)
+    writeFileSync(join(root, "style.css"), "body{}")
+    const artifact = {
+      manifest: {
+        exports: {
+          ".": "./index.js",
+          "./style": "./style.css",
+          "./mixed": { import: "./index.js", browser: "./style.css" },
+        },
+      },
+      entries: new Set(["style.css", "index.js"]),
+      regularFiles: new Map([["style.css", Buffer.from("body{}")]]),
+    }
+    const proof = verifyPackedPayload(pkg, artifact)
+    expect(proof.assetSubpaths).toEqual(["./style"])
+    expect(proof.moduleSubpaths).toEqual([".", "./mixed"])
+    expect(proof.assets[0]).toMatchObject({ path: "style.css", bytes: 6, kind: "css" })
+    artifact.regularFiles.set("style.css", Buffer.from("changed"))
+    expect(() => verifyPackedPayload(pkg, artifact)).toThrow(/ASSET_BYTES_MISMATCH.*style.css/)
+    artifact.regularFiles.delete("style.css")
+    expect(() => verifyPackedPayload(pkg, artifact)).toThrow(/ASSET_NOT_REGULAR.*style.css/)
+    artifact.entries.delete("style.css")
+    expect(() => verifyPackedPayload(pkg, artifact)).toThrow(/ASSET_MISSING.*style.css/)
+  })
+
+  test("positive loader metadata permits raw payload proof but never bypasses an implicit module", () => {
+    const root = temporaryDirectory()
+    const pkg = fixturePackage(root)
+    mkdirSync(join(root, ".claude-plugin"))
+    const metadata = Buffer.from('{"name":"fixture"}')
+    writeFileSync(join(root, ".claude-plugin/plugin.json"), metadata)
+    writeFileSync(join(root, "server.ts"), "export {}")
+    const artifact = {
+      manifest: {},
+      entries: new Set(["package.json", ".claude-plugin/plugin.json", "server.ts"]),
+      regularFiles: new Map([
+        [".claude-plugin/plugin.json", metadata],
+        ["server.ts", Buffer.from("export {}")],
+      ]),
+    }
+    const proof = verifyPackedPayload(pkg, artifact)
+    expect(proof.rawPlugin).toBe(true)
+    expect(proof.moduleChecks.action).toBe("not-asked")
+    expect(proof.assets.map(({ path }) => path)).toEqual([".claude-plugin/plugin.json", "server.ts"])
+    artifact.entries.add("index.js")
+    expect(verifyPackedPayload(pkg, artifact).moduleChecks.action).toBe("run")
+    expect(verifyPackedPayload(pkg, { manifest: {}, entries: new Set() }).moduleChecks.action).toBe("run")
+  })
 })
 
 describe("npm pack size inspection", () => {
@@ -246,6 +301,7 @@ describe("exact tarball gates", () => {
       artifact: {
         manifest: expect.objectContaining({ name: "@fixture/package", version: "1.2.3" }),
         entries: expect.any(Set),
+        regularFiles: expect.any(Map),
       },
     })
     expect([...record.artifact.entries]).toContain("package.json")

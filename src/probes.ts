@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import type { DiscoveredPackage, PackageManifest } from "./discovery.ts"
+import type { PayloadVerification } from "./artifacts.ts"
 import { exportContract } from "./pack-shape.ts"
 import { CommandFailure, runCommand, type CommandResult, type CommandSpec } from "./process.ts"
 import {
@@ -26,6 +27,7 @@ export interface ConsumerCheck {
 export interface FreshConsumerOptions {
   package: Pick<DiscoveredPackage, "name" | "version">
   packedManifest: PackageManifest
+  payload?: PayloadVerification
   registryUrl: string
   npmrcPath: string
   nodePath: string
@@ -589,8 +591,35 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
     })
 
     const manifest = await installedManifest(identity, consumerRoot)
-    const specifiers = literalSpecifiers(identity.name, manifest.exports)
-    if (specifiers.length === 0) {
+    const contract = exportContract(manifest)
+    if (contract.assetTargets.length > 0 && options.payload === undefined) {
+      throw localFailure(identity, {
+        phase: "asset-proof",
+        command: [],
+        cwd: consumerRoot,
+        stderr: `asset proof required before CSS imports are omitted: package=${identity.name} targets=${JSON.stringify(contract.assetTargets)}`,
+      })
+    }
+    if (
+      options.payload !== undefined &&
+      ["exports", "main", "module", "browser", "types", "typings", "bin"].some(
+        (field) => JSON.stringify(manifest[field]) !== JSON.stringify(options.packedManifest[field]),
+      )
+    ) {
+      throw localFailure(identity, {
+        phase: "asset-contract",
+        command: [],
+        cwd: consumerRoot,
+        stderr: `installed entrypoint contract differs from the verified packed manifest: package=${identity.name}`,
+      })
+    }
+    const specifiers =
+      options.payload === undefined
+        ? literalSpecifiers(identity.name, manifest.exports)
+        : options.payload.moduleSubpaths.map((subpath) =>
+            subpath === "." ? identity.name : `${identity.name}/${subpath.slice(2)}`,
+          )
+    if (specifiers.length === 0 && options.payload?.moduleChecks.action !== "not-asked") {
       throw localFailure(identity, {
         phase: "import-specifiers",
         command: [join(consumerRoot, "node_modules", identity.name, "package.json")],
@@ -626,7 +655,7 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
     }
 
     const importScript = `const specifiers = JSON.parse(process.argv[1]);\nfor (const specifier of specifiers) {\n  try {\n    await import(specifier);\n  } catch (error) {\n    console.error(specifier + ": " + (error?.stack ?? String(error)));\n    process.exit(1);\n  }\n}`
-    for (const probe of runtimes) {
+    for (const probe of specifiers.length === 0 ? [] : runtimes) {
       for (const mode of ["development", "production"] as const) {
         await runProbe({
           // Node's phase names are unchanged; a Bun probe says so in its phase.

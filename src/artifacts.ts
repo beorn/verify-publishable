@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
 import { isAbsolute, relative, resolve } from "node:path"
 import { gunzipSync } from "node:zlib"
 
-import type { PackedArtifact } from "./pack-shape.ts"
+import { exportContract, type PackedArtifact } from "./pack-shape.ts"
 import { runCommand, type CommandResult, type CommandSpec } from "./process.ts"
 import type { ResolvedTool } from "./tools.ts"
 
@@ -30,8 +31,93 @@ export interface PackedTarball {
 }
 
 export interface TarballCheckResults {
-  attw: CommandResult
+  attw: CommandResult | null
   publint: CommandResult
+}
+
+export interface PayloadVerification extends ReturnType<typeof exportContract> {
+  rawPlugin: boolean
+  assets: Array<{ path: string; bytes: number; sha256: string; kind: "css" | "plugin" }>
+  moduleChecks: { action: "run" | "not-asked"; reason: string }
+}
+
+/** Qualify the exact bytes before the shared export classification can omit a module check. */
+export function verifyPackedPayload(pkg: ArtifactPackage, artifact: PackedArtifact): PayloadVerification {
+  const contract = exportContract(artifact.manifest)
+  const marker = ".claude-plugin/plugin.json"
+  const noModuleFields = ["exports", "main", "module", "browser", "types", "typings", "bin"].every(
+    (field) => artifact.manifest[field] === undefined,
+  )
+  const implicitModule = [...artifact.entries].some((path) =>
+    /^index\.(?:[cm]?js|json|node|[cm]?tsx?|d\.[cm]?ts)$/u.test(path),
+  )
+  const rawPlugin = artifact.entries.has(marker) && noModuleFields && !implicitModule
+  const paths = rawPlugin
+    ? [...artifact.entries].filter((path) => path !== "package.json").sort()
+    : contract.assetTargets.map((path) => path.slice(2))
+  const assets: PayloadVerification["assets"] = []
+  if (paths.length > 0 && artifact.regularFiles === undefined) {
+    throw new Error(
+      `ASSET_ARCHIVE_RESOURCE_MISSING: package=${pkg.name} required=regular-file-bytes paths=${JSON.stringify(paths)}`,
+    )
+  }
+  const root = realpathSync(pkg.dir)
+  for (const path of paths) {
+    if (!artifact.entries.has(path)) throw new Error(`ASSET_MISSING: package=${pkg.name} path=${path}`)
+    const packed = artifact.regularFiles!.get(path)
+    if (packed === undefined) throw new Error(`ASSET_NOT_REGULAR: package=${pkg.name} path=${path}`)
+    const source = resolve(root, path)
+    if (!pathIsInside(root, source) || source === root)
+      throw new Error(`ASSET_PATH_ESCAPE: package=${pkg.name} path=${path}`)
+    for (let parent = path; parent.includes("/"); ) {
+      parent = parent.slice(0, parent.lastIndexOf("/"))
+      if (artifact.entries.has(parent) && !artifact.regularFiles!.has(parent)) {
+        throw new Error(`ASSET_NOT_REGULAR: package=${pkg.name} path=${path} parent=${parent}`)
+      }
+    }
+    let bytes: Buffer
+    try {
+      if (!lstatSync(source).isFile() || realpathSync(source) !== source)
+        throw new Error("source is not a regular path without symlinks")
+      bytes = readFileSync(source)
+    } catch (error) {
+      throw new Error(`ASSET_SOURCE_INVALID: package=${pkg.name} path=${path} source=${source} cause=${String(error)}`)
+    }
+    if (!bytes.equals(Buffer.from(packed))) throw new Error(`ASSET_BYTES_MISMATCH: package=${pkg.name} path=${path}`)
+    assets.push({
+      path,
+      bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      kind: rawPlugin ? "plugin" : "css",
+    })
+  }
+  if (rawPlugin) {
+    const metadata: unknown = JSON.parse(Buffer.from(artifact.regularFiles!.get(marker)!).toString("utf8"))
+    if (
+      metadata === null ||
+      typeof metadata !== "object" ||
+      Array.isArray(metadata) ||
+      typeof (metadata as Record<string, unknown>).name !== "string" ||
+      (metadata as Record<string, unknown>).name === ""
+    ) {
+      throw new Error(`PLUGIN_METADATA_INVALID: package=${pkg.name} path=${marker} required=nonempty-name`)
+    }
+  }
+  const moduleSubpaths = rawPlugin ? [] : contract.moduleSubpaths
+  return {
+    ...contract,
+    moduleSubpaths,
+    rawPlugin,
+    assets,
+    moduleChecks:
+      moduleSubpaths.length > 0
+        ? { action: "run", reason: "package promises module entrypoints" }
+        : rawPlugin
+          ? { action: "not-asked", reason: "raw plugin payload verified byte-for-byte" }
+          : contract.assetSubpaths.length > 0
+            ? { action: "not-asked", reason: "CSS-only entrypoints verified byte-for-byte" }
+            : { action: "run", reason: "no evidenced non-module contract; existing module checks remain" },
+  }
 }
 
 const TAR_BLOCK_BYTES = 512
@@ -178,6 +264,7 @@ function packedArtifact(pkg: ArtifactPackage, tarballPath: string): PackedArtifa
 
   const manifests: Buffer[] = []
   const entries = new Set<string>()
+  const regularFiles = new Map<string, Uint8Array>()
   let nextPath: string | undefined
   for (let offset = 0; offset + TAR_BLOCK_BYTES <= archive.byteLength; ) {
     const header = archive.subarray(offset, offset + TAR_BLOCK_BYTES)
@@ -214,7 +301,14 @@ function packedArtifact(pkg: ArtifactPackage, tarballPath: string): PackedArtifa
     } else if (type !== "g") {
       const path = nextPath ?? headerPath
       nextPath = undefined
-      if (type !== "5" && path.startsWith("package/")) entries.add(path.slice("package/".length))
+      if (type !== "5" && path.startsWith("package/")) {
+        const relativePath = path.slice("package/".length)
+        if (entries.has(relativePath) && relativePath !== "package.json") {
+          throw new Error(`packed tarball has duplicate member: package=${pkg.name} path=${relativePath}`)
+        }
+        entries.add(relativePath)
+        if (type === "\0" || type === "0") regularFiles.set(relativePath, data)
+      }
       if ((type === "\0" || type === "0") && path === "package/package.json") manifests.push(data)
     }
     offset = dataStart + Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES
@@ -230,7 +324,7 @@ function packedArtifact(pkg: ArtifactPackage, tarballPath: string): PackedArtifa
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw new Error("top level must be an object")
     }
-    return { manifest: value as Record<string, unknown>, entries }
+    return { manifest: value as Record<string, unknown>, entries, regularFiles }
   } catch (error) {
     throw new Error(
       `packed package/package.json is invalid: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)} cause=${String(error)}`,
@@ -336,6 +430,7 @@ export async function runTarballChecks(
     publint: ResolvedTool
     run?: CommandRunner
     tarballPath: string
+    payload?: PayloadVerification
   },
 ): Promise<TarballCheckResults> {
   requirePackagePaths(pkg)
@@ -356,21 +451,27 @@ export async function runTarballChecks(
     args: [options.publint.binPath, options.tarballPath, "--strict"],
     cwd: pkg.dir,
   })
-  const attw = await run({
-    phase: `attw:${pkg.name}`,
-    command: options.nodePath,
-    args: [
-      options.attw.binPath,
-      options.tarballPath,
-      "--profile",
-      "node16",
-      "--ignore-rules",
-      "cjs-resolves-to-esm",
-      "--format",
-      "table",
-      "--no-color",
-    ],
-    cwd: pkg.dir,
-  })
+  const attw =
+    options.payload?.moduleChecks.action === "not-asked"
+      ? null
+      : await run({
+          phase: `attw:${pkg.name}`,
+          command: options.nodePath,
+          args: [
+            options.attw.binPath,
+            options.tarballPath,
+            "--profile",
+            "node16",
+            "--ignore-rules",
+            "cjs-resolves-to-esm",
+            "--format",
+            "table",
+            "--no-color",
+            ...(options.payload?.assetSubpaths.length
+              ? ["--exclude-entrypoints", ...options.payload.assetSubpaths]
+              : []),
+          ],
+          cwd: pkg.dir,
+        })
   return { attw, publint }
 }

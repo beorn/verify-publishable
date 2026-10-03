@@ -2,6 +2,8 @@
 export interface PackedArtifact {
   manifest: Record<string, unknown>
   entries: ReadonlySet<string>
+  /** Regular-file bytes from the existing tar reader; required for any asset exclusion. */
+  regularFiles?: ReadonlyMap<string, Uint8Array>
 }
 
 export interface PackShapeFinding {

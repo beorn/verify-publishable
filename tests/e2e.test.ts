@@ -146,6 +146,8 @@ describe("real repository verification", () => {
         ],
         consumerCheckRan: false,
         runtimes: [{ runtime: "node", version: result.nodeVersion, reason: "engines declares node only" }],
+        assets: [],
+        moduleChecks: { action: "run", reason: "package promises module entrypoints" },
       },
     ])
     expect(result.packages[0]!.unpackedSize).toBeGreaterThan(0)
