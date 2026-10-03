@@ -125,7 +125,12 @@ describe("packed asset contracts", () => {
     expect(verifyPackedPayload(pkg, { manifest, entries: new Set([...entries, "index.js"]) }).moduleChecks.action).toBe(
       "run",
     )
-    for (const bin of [{}, { fixture: "./bin/fixture.mjs", invalid: 42 }]) {
+    for (const bin of [
+      {},
+      { fixture: "./bin/fixture.mjs", invalid: 42 },
+      { "": "./bin/fixture.mjs" },
+      { "nested/name": "./bin/fixture.mjs" },
+    ]) {
       expect(verifyPackedPayload(pkg, { manifest: { bin }, entries }).moduleChecks.action).toBe("run")
     }
   })

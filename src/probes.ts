@@ -4,7 +4,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 
 import type { DiscoveredPackage, PackageManifest } from "./discovery.ts"
 import type { PayloadVerification } from "./artifacts.ts"
-import { exportContract } from "./pack-shape.ts"
+import { exportContract, validBinName } from "./pack-shape.ts"
 import { CommandFailure, runCommand, type CommandResult, type CommandSpec } from "./process.ts"
 import {
   binRuntimePlan,
@@ -287,7 +287,7 @@ async function explicitBin(
   description: "package bin" | "runner",
   expectedPackageRoot?: string,
 ): Promise<string> {
-  if (binName === "" || basename(binName) !== binName) {
+  if (!validBinName(binName)) {
     throw localFailure(identity, {
       phase,
       command: [binName, ...args],

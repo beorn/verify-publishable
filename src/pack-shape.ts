@@ -1,3 +1,5 @@
+import { basename } from "node:path"
+
 /** The manifest and file list extracted from the same tarball after publishConfig was applied. */
 export interface PackedArtifact {
   manifest: Record<string, unknown>
@@ -19,6 +21,11 @@ interface Entry {
 
 const TYPESCRIPT_SOURCE = /\.(?:ts|tsx|mts|cts)$/u
 const DECLARATION = /\.d\.(?:ts|mts|cts)$/u
+
+/** The same bin-name boundary applies to packed declarations and installed links. */
+export function validBinName(name: string): boolean {
+  return name !== "" && basename(name) === name
+}
 
 function stringEntry(field: string, value: unknown): Entry[] {
   return typeof value === "string" ? [{ field, target: value }] : []
@@ -70,16 +77,16 @@ export function exportContract(
   const bins = manifestEntries(manifest).filter(
     ({ field }) => field === "bin" || field.startsWith("bin.") || field.startsWith("bin["),
   )
-  const declaredBinCount =
-    typeof manifest.bin === "string"
-      ? 1
-      : manifest.bin !== null && typeof manifest.bin === "object" && !Array.isArray(manifest.bin)
-        ? Object.keys(manifest.bin).length
-        : 0
+  const binNames =
+    manifest.bin !== null && typeof manifest.bin === "object" && !Array.isArray(manifest.bin)
+      ? Object.keys(manifest.bin)
+      : []
+  const declaredBinCount = typeof manifest.bin === "string" ? 1 : binNames.length
   if (
     entries !== undefined &&
     bins.length > 0 &&
     bins.length === declaredBinCount &&
+    binNames.every(validBinName) &&
     bins.every(({ target }) => target.trim() !== "") &&
     ["exports", "main", "module", "browser", "types", "typings"].every((field) => manifest[field] === undefined) &&
     ![...entries].some((path) => path.startsWith("index."))

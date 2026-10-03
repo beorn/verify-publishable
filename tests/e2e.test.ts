@@ -157,14 +157,31 @@ describe("real repository verification", () => {
     expect(readFileSync(internalManifestPath, "utf8")).toBe(internalManifestBefore)
   }, 120_000)
 
-  test("retains only fully verified tarballs in the caller's directory with npm SHA-512", async () => {
+  // @failure A bin-only archive is retained without a cold installed bin run in every claimed runtime.
+  // Existing module-with-bin journeys cannot detect accidentally requiring a library root here.
+  test("retains a cold verified bin-only tarball with every claimed runtime and npm SHA-512", async () => {
     const root = installedFixture()
     const outputDir = emptyOutputDirectory()
+    updatePublicManifest(root, (manifest) => {
+      delete manifest.exports
+      delete manifest.types
+      delete manifest.dependencies
+      manifest.engines = { node: ">=24 <25", bun: ">=1.3.14" }
+    })
 
     const result = await verifyRepository({ root, outputDir })
 
     expect(result.kept).toBeUndefined()
     const verified = result.packages[0]!
+    expect(verified.specifiers).toEqual([])
+    expect(verified.moduleChecks).toMatchObject({
+      action: "not-asked",
+      reason: expect.stringMatching(/bin-only.*ATTW import check not applicable/),
+    })
+    expect(verified.binRuntimes.map(({ runtime, action }) => ({ runtime, action }))).toEqual([
+      { runtime: "node", action: "run" },
+      { runtime: "bun", action: "run" },
+    ])
     expect(verified.tarballPath).toMatch(new RegExp(`^${outputDir}/`, "u"))
     expect(readdirSync(outputDir)).toHaveLength(1)
     const bytes = readFileSync(verified.tarballPath!)
