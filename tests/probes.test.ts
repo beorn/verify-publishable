@@ -35,6 +35,10 @@ const hostBunPath = findHostExecutable("bun")
 if (hostBunPath === null) throw new Error("HOST_TOOL_MISSING: tool=bun searched=PATH purpose=test-fixtures")
 
 interface FakeNpmOptions {
+  /** No library entrypoint is promised; the installed package exposes only its bin. */
+  binOnly?: boolean
+  /** Real installed bin source for runtime-boundary regressions. */
+  binSource?: string
   /** The packed manifest's engines; absent means the manifest declares none. */
   engines?: Record<string, string>
   /** The package bin's shebang interpreter. */
@@ -87,12 +91,16 @@ function fakeNpm(options: FakeNpmOptions = {}): {
     name: "@fixture/public",
     version: "1.2.3",
     type: "module",
-    exports: {
-      ".": "./index.mjs",
-      "./feature": "./feature.mjs",
-      "./matchers": "./matchers.mjs",
-      "./generated/*": "./generated/*.mjs",
-    },
+    ...(options.binOnly === true
+      ? {}
+      : {
+          exports: {
+            ".": "./index.mjs",
+            "./feature": "./feature.mjs",
+            "./matchers": "./matchers.mjs",
+            "./generated/*": "./generated/*.mjs",
+          },
+        }),
     bin: { fixture: "./cli.mjs" },
     ...(options.engines === undefined ? {} : { engines: options.engines }),
     ...(options.requiresOptionalPeer === true
@@ -149,10 +157,10 @@ if (args.includes("isomorphic-git@^1.38.7")) {
   writeFileSync(join(peerRoot, "index.mjs"), 'export const installed = true\\n')
 }
 writeFileSync(join(packageRoot, "package.json"), ${JSON.stringify(`${JSON.stringify(manifest)}\n`)})
-writeFileSync(join(packageRoot, "index.mjs"), ${JSON.stringify(`import { appendFileSync } from "node:fs"\nconst runtime = typeof Bun === "undefined" ? "node" : "bun"\nappendFileSync(${JSON.stringify(runtimeLog)}, process.env.NODE_ENV + ":" + runtime + "\\n")\n${options.rootFailsUnderBun === true ? 'if (runtime === "bun") throw new Error("fixture root cannot load under Bun")\n' : ""}appendFileSync(${JSON.stringify(importLog)}, process.env.NODE_ENV + ":root\\n")\nexport const root = true\n`)})
+if (${options.binOnly !== true}) writeFileSync(join(packageRoot, "index.mjs"), ${JSON.stringify(`import { appendFileSync } from "node:fs"\nconst runtime = typeof Bun === "undefined" ? "node" : "bun"\nappendFileSync(${JSON.stringify(runtimeLog)}, process.env.NODE_ENV + ":" + runtime + "\\n")\n${options.rootFailsUnderBun === true ? 'if (runtime === "bun") throw new Error("fixture root cannot load under Bun")\n' : ""}appendFileSync(${JSON.stringify(importLog)}, process.env.NODE_ENV + ":root\\n")\nexport const root = true\n`)})
 writeFileSync(join(packageRoot, "feature.mjs"), ${JSON.stringify(`${options.requiresOptionalPeer === true ? 'import "isomorphic-git"\n' : ""}import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(importLog)}, process.env.NODE_ENV + ":feature\\n")\n${options.emptyFeature === true ? "export {}" : "export const feature = true"}\n`)})
 writeFileSync(join(packageRoot, "matchers.mjs"), ${JSON.stringify(`import { appendFileSync } from "node:fs"\nif (process.env.NODE_ENV) appendFileSync(${JSON.stringify(importLog)}, process.env.NODE_ENV + ":matchers\\n")\nif (globalThis.__VITEST_CONTEXT__ === true && ${options.registerMatcher !== false}) globalThis.__FIXTURE_MATCHER__ = true\nexport const terminalMatchers = {}\n`)})
-writeFileSync(join(packageRoot, "cli.mjs"), ${JSON.stringify(`#!/usr/bin/env ${options.binShebang ?? "node"}\nimport { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(binLog)}, process.argv.slice(2).join(" ") + "\\n")\nif (process.argv[2] !== "--help") process.exit(91)\nconsole.log("Usage: fixture")\n`)})
+writeFileSync(join(packageRoot, "cli.mjs"), ${JSON.stringify(options.binSource ?? `#!/usr/bin/env ${options.binShebang ?? "node"}\nimport { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(binLog)}, process.argv.slice(2).join(" ") + "\\n")\nif (process.argv[2] !== "--help") process.exit(91)\nconsole.log("Usage: fixture")\n`)})
 chmodSync(join(packageRoot, "cli.mjs"), 0o755)
 if (${options.linkPackageBin !== false}) {
   symlinkSync(join(packageRoot, "cli.mjs"), join(cwd, "node_modules", ".bin", "fixture"))
@@ -825,6 +833,103 @@ describe("probe runtimes follow the manifest's engines", () => {
       stderr: expect.stringMatching(/bunOnlyBins names bin other, which @fixture\/public does not declare/),
     })
   })
+})
+
+/**
+ * @failure A bin-only package passes a claimed runtime through ambient Bun or a bin exemption,
+ * although its installed command fails in that runtime. Existing library fixtures still import modules.
+ * @level l1
+ * @consumer cold installed bin-only runtime qualification
+ */
+describe("bin-only installed runtime contracts", () => {
+  async function probeBinOnly(fixture: ReturnType<typeof fakeNpm>, bunOnlyBins?: BunOnlyBin[]) {
+    const npmrcPath = join(temporaryDirectory("bin-only-npmrc"), "consumer.npmrc")
+    writeFileSync(npmrcPath, "registry=http://127.0.0.1:4873/\n")
+    return probeFreshConsumer({
+      package: { name: "@fixture/public", version: "1.2.3" },
+      packedManifest: fixture.packedManifest,
+      payload: {
+        classification: "bin-only",
+        moduleSubpaths: [],
+        assetSubpaths: [],
+        assetTargets: [],
+        rawPlugin: false,
+        assets: [],
+        moduleChecks: { action: "not-asked", reason: "bin-only package promises no library import" },
+      },
+      registryUrl: "http://127.0.0.1:4873/",
+      npmrcPath,
+      nodePath: fixture.nodePath,
+      bunPath: hostBunPath!,
+      npmPath: fixture.npmPath,
+      ...(bunOnlyBins === undefined ? {} : { bunOnlyBins }),
+    })
+  }
+
+  test("a claimed Node bin cannot qualify by delegating to ambient Bun", async () => {
+    const fixture = fakeNpm({
+      binOnly: true,
+      engines: { node: ">=24" },
+      binSource: `#!/usr/bin/env node
+import { spawnSync } from "node:child_process"
+const child = spawnSync("bun", ["--eval", "process.exit(0)"], { stdio: "inherit" })
+if (child.error) console.error("ambient Bun is required")
+process.exit(child.status ?? 73)
+`,
+    })
+    // Even Bun beside the selected Node must not be available to its cold bin probe.
+    executable(join(dirname(fixture.nodePath), "bun"), `#!${hostNodePath}\nprocess.exit(0)\n`)
+    await expect(probeBinOnly(fixture)).rejects.toMatchObject({
+      phase: "bin-help",
+      status: 73,
+      stderr: expect.stringContaining("ambient Bun is required"),
+    })
+  })
+
+  test.each([
+    { engines: { node: ">=24" }, failedRuntime: "node", phase: "bin-help" },
+    { engines: { node: ">=24", bun: ">=1.0.0" }, failedRuntime: "bun", phase: "bin-help-bun" },
+    { engines: { bun: ">=1.0.0" }, failedRuntime: "bun", phase: "bin-help-bun" },
+  ])("refuses real bin failure under $failedRuntime for $engines", async ({ engines, failedRuntime, phase }) => {
+    const fixture = fakeNpm({
+      binOnly: true,
+      engines,
+      binShebang: "node" in engines ? "node" : "bun",
+      binSource: `#!/usr/bin/env ${"node" in engines ? "node" : "bun"}
+const runtime = typeof Bun === "undefined" ? "node" : "bun"
+if (runtime === ${JSON.stringify(failedRuntime)}) { console.error("claimed runtime failed: " + runtime); process.exit(74) }
+`,
+    })
+    await expect(probeBinOnly(fixture)).rejects.toMatchObject({
+      phase,
+      status: 74,
+      stderr: expect.stringContaining("claimed runtime failed: " + failedRuntime),
+    })
+  })
+
+  test("a bin-only contract cannot exempt its claimed Node runtime with bunOnlyBins", async () => {
+    const fixture = fakeNpm({ binOnly: true, engines: { node: ">=24", bun: ">=1.0.0" }, binShebang: "bun" })
+    await expect(
+      probeBinOnly(fixture, [{ package: "@fixture/public", bin: "fixture", reason: "the CLI uses Bun" }]),
+    ).rejects.toMatchObject({
+      phase: "bin-runtime",
+      stderr: expect.stringMatching(/bin-only.*every claimed runtime.*bunOnlyBins/),
+    })
+  })
+
+  test.each([{ node: ">=24" }, { node: ">=24", bun: ">=1.0.0" }, { bun: ">=1.0.0" }])(
+    "runs every claimed runtime for a qualified bin-only package: %j",
+    async (engines) => {
+      const fixture = fakeNpm({ binOnly: true, engines, binShebang: "node" in engines ? "node" : "bun" })
+      const result = await probeBinOnly(fixture)
+      expect(result.specifiers).toEqual([])
+      expect(result.binRuntimes.map(({ runtime, action }) => ({ runtime, action }))).toEqual(
+        Object.keys(engines).map((runtime) => ({ runtime, action: "run" })),
+      )
+      expect(lines(fixture.binLog)).toHaveLength(Object.keys(engines).length)
+      expect(lines(fixture.importLog)).toEqual([])
+    },
+  )
 })
 
 describe("literal import specifiers", () => {

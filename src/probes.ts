@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
@@ -654,6 +654,17 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
       })
     }
 
+    if (options.payload?.classification === "bin-only") {
+      // A bin is this package's only runtime contract. Ambient Bun must not turn
+      // a nominal Node fallback into a passing Node claim (and vice versa).
+      for (const probe of runtimes) {
+        const runtimeDirectory = join(consumerRoot, ".verify-runtime", probe.runtime)
+        await mkdir(runtimeDirectory, { recursive: true })
+        await symlink(probe.command, join(runtimeDirectory, probe.runtime))
+        probe.env = { ...probe.env, PATH: runtimeDirectory, NODE_PATH: undefined }
+      }
+    }
+
     const importScript = `const specifiers = JSON.parse(process.argv[1]);\nfor (const specifier of specifiers) {\n  try {\n    await import(specifier);\n  } catch (error) {\n    console.error(specifier + ": " + (error?.stack ?? String(error)));\n    process.exit(1);\n  }\n}`
     for (const probe of specifiers.length === 0 ? [] : runtimes) {
       for (const mode of ["development", "production"] as const) {
@@ -702,20 +713,29 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
         "package bin",
         packageRoot,
       )
-      // A package that promises Node must not ship a bin only Bun runs, unless it declares that bin Bun-only.
-      const rows = await planBinRuntimes(
-        identity,
-        consumerRoot,
-        binName,
-        binPath,
-        manifest.engines,
-        options.bunOnlyBins?.find((declaration) => declaration.bin === binName),
-      )
+      const bunOnlyBin = options.bunOnlyBins?.find((declaration) => declaration.bin === binName)
+      if (options.payload?.classification === "bin-only" && bunOnlyBin !== undefined) {
+        throw localFailure(identity, {
+          phase: "bin-runtime",
+          command: [binPath, "--help"],
+          cwd: consumerRoot,
+          stderr: `bin-only package must run its bin under every claimed runtime; bunOnlyBins cannot exempt bin=${binName}; declare Bun alone in the package engines when required`,
+        })
+      }
+      // A library may separately declare a Bun-only CLI; a bin-only contract cannot waive its runtime promise.
+      const rows = await planBinRuntimes(identity, consumerRoot, binName, binPath, manifest.engines, bunOnlyBin)
       binRuntimes.push(...rows)
       for (const probe of runtimes) {
         if (rows.find((row) => row.runtime === probe.runtime)?.action !== "run") continue
         if (probe.runtime === "node") {
-          await runProbe({ phase: "bin-help", command: binPath, args: ["--help"], cwd: consumerRoot, env: probe.env })
+          const binOnly = options.payload?.classification === "bin-only"
+          await runProbe({
+            phase: "bin-help",
+            command: binOnly ? probe.command : binPath,
+            args: binOnly ? [binPath, "--help"] : ["--help"],
+            cwd: consumerRoot,
+            env: probe.env,
+          })
           continue
         }
         await runProbe({
