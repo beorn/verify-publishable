@@ -302,7 +302,13 @@ export async function discoverRepository(rootInput: string): Promise<RepositoryP
   const searched = [".", ...includes]
 
   const packages: DiscoveredPackage[] = []
-  packages.push(packageFromManifest(root, rootManifestPath, rootManifest))
+  const incompletePrivateRoot =
+    rootManifest.private === true &&
+    (rootManifest.name === undefined || rootManifest.version === undefined) &&
+    [rootManifest.name, rootManifest.version].every(
+      (value) => value === undefined || (typeof value === "string" && value !== ""),
+    )
+  if (!incompletePrivateRoot) packages.push(packageFromManifest(root, rootManifestPath, rootManifest))
   for (const manifestPath of await workspaceManifests(root, includes, excluded)) {
     const raw = await readJson(manifestPath)
     packages.push(packageFromManifest(root, manifestPath, raw))

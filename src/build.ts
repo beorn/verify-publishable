@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url"
 import { StringDecoder } from "node:string_decoder"
 import type { Writable } from "node:stream"
 
-import type { DiscoveredPackage, RepositoryPlan } from "./discovery.ts"
+import type { RepositoryPlan } from "./discovery.ts"
 import { CommandFailure, runCommand } from "./process.ts"
 
 export interface ConfiguredBuildStep {
@@ -200,11 +200,11 @@ export interface BuildPlan {
   steps: BuildStep[]
 }
 
-function buildScript(pkg: DiscoveredPackage): string | undefined {
-  const scripts = pkg.manifest.scripts
+function buildScript(manifest: Record<string, unknown>): string | undefined {
+  const scripts = manifest.scripts
   if (scripts === undefined || scripts === null || typeof scripts !== "object" || Array.isArray(scripts))
     return undefined
-  const build = scripts.build
+  const build = (scripts as Record<string, unknown>).build
   return typeof build === "string" && build.trim() !== "" ? build : undefined
 }
 
@@ -215,21 +215,21 @@ export function planBuild(plan: RepositoryPlan, options: { noBuild: boolean }): 
   }
 
   const rootPackage = plan.packages.find((pkg) => pkg.relativeDir === ".")
-  if (rootPackage !== undefined && buildScript(rootPackage) !== undefined) {
+  if (buildScript(plan.rootManifest) !== undefined) {
     return {
       mode: "root-script",
-      steps: [{ kind: "script", cwd: plan.root, package: rootPackage.name, script: "build" }],
+      steps: [{ kind: "script", cwd: plan.root, package: rootPackage?.name ?? "repository root", script: "build" }],
     }
   }
 
-  const uncovered = plan.publicPackages.filter((pkg) => buildScript(pkg) === undefined).map(({ name }) => name)
+  const uncovered = plan.publicPackages.filter((pkg) => buildScript(pkg.manifest) === undefined).map(({ name }) => name)
   if (uncovered.length > 0) {
     throw new Error(
       `public packages have no build script and no root/configured build covers them: packages=${JSON.stringify(uncovered)}`,
     )
   }
   const steps: ScriptBuildStep[] = plan.packages
-    .filter((pkg) => pkg.relativeDir !== "." && buildScript(pkg) !== undefined)
+    .filter((pkg) => pkg.relativeDir !== "." && buildScript(pkg.manifest) !== undefined)
     .map((pkg) => ({ kind: "script", cwd: pkg.dir, package: pkg.name, script: "build" }))
   return { mode: "package-scripts", steps }
 }

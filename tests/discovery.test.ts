@@ -25,6 +25,27 @@ afterEach(() => {
 })
 
 describe("repository discovery", () => {
+  test.each([{ name: "private-root" }, { version: "1.0.0" }, {}])(
+    "keeps incomplete private roots outside the artifact list: %j",
+    async (identity) => {
+      const root = fixture({ ...identity, private: true, workspaces: ["packages/*"] })
+      writeManifest(join(root, "packages/public"), { name: "public", version: "1.0.0" })
+      writeManifest(join(root, "packages/internal"), { name: "internal", version: "1.0.0", private: true })
+      const plan = await discoverRepository(root)
+      expect(plan.packages.map(({ name }) => name)).toEqual(["internal", "public"])
+      expect(plan.publicPackages.map(({ name }) => name)).toEqual(["public"])
+    },
+  )
+
+  test("refuses malformed private root identity even when another identity field is absent", async () => {
+    for (const identity of [{ name: "" }, { name: 42 }, { version: "" }, { version: null }]) {
+      await expect(discoverRepository(fixture({ ...identity, private: true }))).rejects.toThrow(
+        /non-empty name and version/,
+      )
+    }
+    await expect(discoverRepository(fixture({ name: "public-root" }))).rejects.toThrow(/non-empty name and version/)
+  })
+
   test("defaults each selected build step to ten minutes and validates an override", async () => {
     const root = fixture({ name: "fixture", version: "1.0.0" })
     expect((await discoverRepository(root)).config.buildTimeoutMs).toBe(600_000)

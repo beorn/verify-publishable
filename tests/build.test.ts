@@ -29,6 +29,20 @@ afterEach(() => {
 })
 
 describe("build selection", () => {
+  test("executes a versionless private root build covering public workspace packages", async () => {
+    const root = fixture({
+      name: "private-root",
+      private: true,
+      workspaces: ["packages/*"],
+      scripts: { build: 'bun -e \'Bun.write("built.txt", "root built")\'' },
+    })
+    writeManifest(join(root, "packages/public"), { name: "public", version: "1.0.0" })
+    const repository = await discoverRepository(root)
+    expect(planBuild(repository, { noBuild: false }).mode).toBe("root-script")
+    await executeBuild(repository)
+    expect(readFileSync(join(root, "built.txt"), "utf8")).toBe("root built")
+  })
+
   test("drops bounded live output under backpressure and reports the byte count on drain", async () => {
     const destination = new EventEmitter() as Writable
     const writes: string[] = []
