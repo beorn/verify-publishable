@@ -70,9 +70,16 @@ export function exportContract(
   const bins = manifestEntries(manifest).filter(
     ({ field }) => field === "bin" || field.startsWith("bin.") || field.startsWith("bin["),
   )
+  const declaredBinCount =
+    typeof manifest.bin === "string"
+      ? 1
+      : manifest.bin !== null && typeof manifest.bin === "object" && !Array.isArray(manifest.bin)
+        ? Object.keys(manifest.bin).length
+        : 0
   if (
     entries !== undefined &&
     bins.length > 0 &&
+    bins.length === declaredBinCount &&
     bins.every(({ target }) => target.trim() !== "") &&
     ["exports", "main", "module", "browser", "types", "typings"].every((field) => manifest[field] === undefined) &&
     ![...entries].some((path) => path.startsWith("index."))

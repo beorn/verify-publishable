@@ -125,7 +125,9 @@ describe("packed asset contracts", () => {
     expect(verifyPackedPayload(pkg, { manifest, entries: new Set([...entries, "index.js"]) }).moduleChecks.action).toBe(
       "run",
     )
-    expect(verifyPackedPayload(pkg, { manifest: { bin: {} }, entries }).moduleChecks.action).toBe("run")
+    for (const bin of [{}, { fixture: "./bin/fixture.mjs", invalid: 42 }]) {
+      expect(verifyPackedPayload(pkg, { manifest: { bin }, entries }).moduleChecks.action).toBe("run")
+    }
   })
 
   test("CSS bytes are proved and only CSS-only entrypoints exclude module checks", () => {
