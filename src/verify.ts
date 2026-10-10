@@ -191,15 +191,6 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
 
   try {
     const sizes = new Map<string, number>()
-    for (const pkg of repository.publicPackages) {
-      const record = await inspectNpmPack(pkg, {
-        maxUnpackedBytes: repository.config.maxUnpackedBytes,
-        nodePath: host.nodePath,
-        npmCliPath: host.npmPath,
-      })
-      sizes.set(pkg.name, record.unpackedSize)
-    }
-
     const payloads = new Map<string, PayloadVerification>()
     const packed = await withSandboxManifests(repository.packages, async () => {
       const results = new Map<string, PackedTarball>()
@@ -217,6 +208,18 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       return results
     })
     packedArtifacts = packed
+
+    for (const pkg of repository.publicPackages) {
+      const tarball = packed.get(pkg.name)
+      if (tarball === undefined) throw new Error(`PACK_ARTIFACT_MISSING: package=${pkg.name} packed=[]`)
+      const record = await inspectNpmPack(pkg, {
+        tarballPath: tarball.tarballPath,
+        maxUnpackedBytes: repository.config.maxUnpackedBytes,
+        nodePath: host.nodePath,
+        npmCliPath: host.npmPath,
+      })
+      sizes.set(pkg.name, record.unpackedSize)
+    }
 
     for (const pkg of repository.publicPackages) {
       const tarball = packed.get(pkg.name)

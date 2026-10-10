@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
-import { isAbsolute, relative, resolve } from "node:path"
+import { dirname, isAbsolute, relative, resolve } from "node:path"
 import { gunzipSync } from "node:zlib"
 
 import { exportContract, type PackedArtifact } from "./pack-shape.ts"
@@ -136,15 +136,16 @@ function requirePackagePaths(pkg: ArtifactPackage): void {
   requireAbsolutePath("package directory", pkg.dir)
 }
 
-function invalidNpmResult(pkg: ArtifactPackage, reason: string, stdout: string): Error {
+function invalidNpmResult(diagnostic: string, reason: string, result: CommandResult): Error {
   return new Error(
-    `invalid npm pack --dry-run result: package=${JSON.stringify(pkg.name)} cwd=${JSON.stringify(pkg.dir)}; ${reason}; stdout=${JSON.stringify(stdout)}`,
+    `invalid npm pack --dry-run result: ${diagnostic}; ${reason}; stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
   )
 }
 
 export async function inspectNpmPack(
   pkg: ArtifactPackage,
   options: {
+    tarballPath: string
     maxUnpackedBytes: number
     nodePath: string
     npmCliPath: string
@@ -152,6 +153,7 @@ export async function inspectNpmPack(
   },
 ): Promise<NpmPackRecord> {
   requirePackagePaths(pkg)
+  requireAbsolutePath("tarballPath", options.tarballPath)
   requireAbsolutePath("nodePath", options.nodePath)
   requireAbsolutePath("npmCliPath", options.npmCliPath)
   if (!Number.isSafeInteger(options.maxUnpackedBytes) || options.maxUnpackedBytes <= 0) {
@@ -160,47 +162,48 @@ export async function inspectNpmPack(
     )
   }
 
+  const args = [options.npmCliPath, "pack", options.tarballPath, "--dry-run", "--json", "--ignore-scripts"]
+  const cwd = dirname(options.tarballPath)
+  const diagnostic = `package=${JSON.stringify(pkg.name)} artifact=${JSON.stringify(options.tarballPath)} command=${JSON.stringify([options.nodePath, ...args])} cwd=${JSON.stringify(cwd)}`
   const result = await (options.run ?? runCommand)({
     phase: `npm-pack-dry-run:${pkg.name}`,
     command: options.nodePath,
-    // The repository build phase has already produced the artifact inputs.
-    // Suppress lifecycle scripts here so chatty prepack output cannot corrupt
-    // npm's otherwise machine-readable JSON response.
-    args: [options.npmCliPath, "pack", "--dry-run", "--json", "--ignore-scripts"],
-    cwd: pkg.dir,
+    // Inspect the already packed bytes outside the source directory, without lifecycle scripts.
+    args,
+    cwd,
     // npm 11 enforces a repository's devEngines.packageManager even for this
     // deliberately npm-owned artifact inspection. Override that authoring-tool
     // check only for pack: consumer installs keep npm's peer resolution strict.
     env: { npm_config_force: "true" },
   })
-  if (result.stdout.trim() === "") throw invalidNpmResult(pkg, "empty stdout", result.stdout)
+  if (result.stdout.trim() === "") throw invalidNpmResult(diagnostic, "empty stdout", result)
 
   let parsed: unknown
   try {
     parsed = JSON.parse(result.stdout)
   } catch {
-    throw invalidNpmResult(pkg, "malformed JSON", result.stdout)
+    throw invalidNpmResult(diagnostic, "malformed JSON", result)
   }
   if (!Array.isArray(parsed) || parsed.length !== 1) {
     const count = Array.isArray(parsed) ? parsed.length : "not-an-array"
-    throw invalidNpmResult(pkg, `expected exactly one result; actual=${count}`, result.stdout)
+    throw invalidNpmResult(diagnostic, `expected exactly one result; actual=${count}`, result)
   }
 
   const raw: unknown = parsed[0]
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw invalidNpmResult(pkg, "result must be an object", result.stdout)
+    throw invalidNpmResult(diagnostic, "result must be an object", result)
   }
   const { filename, unpackedSize } = raw as Record<string, unknown>
   if (typeof unpackedSize !== "number" || !Number.isSafeInteger(unpackedSize) || unpackedSize < 0) {
-    throw invalidNpmResult(pkg, `invalid unpackedSize: actual=${JSON.stringify(unpackedSize)}`, result.stdout)
+    throw invalidNpmResult(diagnostic, `invalid unpackedSize: actual=${JSON.stringify(unpackedSize)}`, result)
   }
   if (unpackedSize > options.maxUnpackedBytes) {
     throw new Error(
-      `npm package exceeds unpacked-size limit: package=${JSON.stringify(pkg.name)} cwd=${JSON.stringify(pkg.dir)} unpackedSize=${unpackedSize} maxUnpackedBytes=${options.maxUnpackedBytes}`,
+      `npm package exceeds unpacked-size limit: ${diagnostic} unpackedSize=${unpackedSize} maxUnpackedBytes=${options.maxUnpackedBytes}`,
     )
   }
   if (typeof filename !== "string" || filename === "") {
-    throw invalidNpmResult(pkg, `invalid filename: actual=${JSON.stringify(filename)}`, result.stdout)
+    throw invalidNpmResult(diagnostic, `invalid filename: actual=${JSON.stringify(filename)}`, result)
   }
 
   return {

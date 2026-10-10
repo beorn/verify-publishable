@@ -196,6 +196,7 @@ describe("npm pack size inspection", () => {
 
     await expect(
       inspectNpmPack(pkg, {
+        tarballPath: join(root, "outgoing.tgz"),
         maxUnpackedBytes: 100,
         nodePath: process.execPath,
         npmCliPath,
@@ -204,7 +205,15 @@ describe("npm pack size inspection", () => {
       expect.objectContaining<Partial<CommandFailure>>({
         name: "CommandFailure",
         phase: "npm-pack-dry-run:@fixture/package",
-        command: [process.execPath, npmCliPath, "pack", "--dry-run", "--json", "--ignore-scripts"],
+        command: [
+          process.execPath,
+          npmCliPath,
+          "pack",
+          join(root, "outgoing.tgz"),
+          "--dry-run",
+          "--json",
+          "--ignore-scripts",
+        ],
         cwd: root,
         status: 23,
         stderr: "fixture pack failure",
@@ -224,14 +233,20 @@ describe("npm pack size inspection", () => {
     const pkg = fixturePackage(root)
     const run: CommandRunner = async () => commandResult(stdout)
 
-    await expect(
-      inspectNpmPack(pkg, {
-        maxUnpackedBytes: 100,
-        nodePath: process.execPath,
-        npmCliPath: join(root, "npm-cli.js"),
-        run,
-      }),
-    ).rejects.toThrow(message)
+    const inspection = inspectNpmPack(pkg, {
+      tarballPath: join(root, "outgoing.tgz"),
+      maxUnpackedBytes: 100,
+      nodePath: process.execPath,
+      npmCliPath: join(root, "npm-cli.js"),
+      run,
+    })
+    await expect(inspection).rejects.toThrow(message)
+    await expect(inspection).rejects.toThrow(`artifact=${JSON.stringify(join(root, "outgoing.tgz"))}`)
+    await expect(inspection).rejects.toThrow(
+      `command=${JSON.stringify([process.execPath, join(root, "npm-cli.js"), "pack", join(root, "outgoing.tgz"), "--dry-run", "--json", "--ignore-scripts"])}`,
+    )
+    await expect(inspection).rejects.toThrow(`cwd=${JSON.stringify(root)}`)
+    await expect(inspection).rejects.toThrow(`stdout=${JSON.stringify(stdout)} stderr=""`)
   })
 
   test("fails when npm reports an artifact over the configured unpacked-size cap", async () => {
@@ -241,6 +256,7 @@ describe("npm pack size inspection", () => {
 
     await expect(
       inspectNpmPack(pkg, {
+        tarballPath: join(root, "outgoing.tgz"),
         maxUnpackedBytes: 100,
         nodePath: process.execPath,
         npmCliPath: join(root, "npm-cli.js"),
@@ -251,16 +267,19 @@ describe("npm pack size inspection", () => {
 
   test("returns a structured record and lets npm inspect a Bun-governed package without weakening consumer installs", async () => {
     const root = temporaryDirectory()
+    const destination = temporaryDirectory("verify-publishable-size-")
+    const tarballPath = join(destination, "outgoing.tgz")
     const pkg = fixturePackage(root)
     const npmCliPath = join(root, "npm-cli.js")
     const commands: CommandSpec[] = []
     const run: CommandRunner = async (spec) => {
       commands.push(spec)
-      return commandResult('[{"filename":"fixture-package-1.2.3.tgz","unpackedSize":99}]')
+      return commandResult('[{"filename":"fixture-package-1.2.3.tgz","unpackedSize":100}]')
     }
 
     await expect(
       inspectNpmPack(pkg, {
+        tarballPath,
         maxUnpackedBytes: 100,
         nodePath: process.execPath,
         npmCliPath,
@@ -270,14 +289,14 @@ describe("npm pack size inspection", () => {
       filename: "fixture-package-1.2.3.tgz",
       maxUnpackedBytes: 100,
       name: "@fixture/package",
-      unpackedSize: 99,
+      unpackedSize: 100,
       version: "1.2.3",
     })
     expect(commands).toEqual([
       {
-        args: [npmCliPath, "pack", "--dry-run", "--json", "--ignore-scripts"],
+        args: [npmCliPath, "pack", tarballPath, "--dry-run", "--json", "--ignore-scripts"],
         command: process.execPath,
-        cwd: root,
+        cwd: destination,
         env: { npm_config_force: "true" },
         phase: "npm-pack-dry-run:@fixture/package",
       },

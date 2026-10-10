@@ -5,11 +5,12 @@
  * @consumer repositories using verifyRepository or the verify-publishable CLI
  */
 
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import {
   appendFileSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -110,6 +111,49 @@ afterEach(() => {
 })
 
 describe("real repository verification", () => {
+  // @failure Source fits the configured cap while publishConfig.directory packs different, oversized bytes.
+  test("measures the outgoing pnpm artifact against the unpacked-size cap", async () => {
+    const root = installedFixture()
+    const outputDir = emptyOutputDirectory()
+    const rootManifestPath = join(root, "package.json")
+    const rootManifest = JSON.parse(readFileSync(rootManifestPath, "utf8"))
+    rootManifest.verifyPublishable.maxUnpackedBytes = 8 * 1024
+    writeFileSync(rootManifestPath, JSON.stringify(rootManifest))
+    updatePublicManifest(root, (manifest) => {
+      manifest.files = ["source.js"]
+      manifest.exports = { ".": "./source.js" }
+      manifest.publishConfig = { access: "public", directory: "dist" }
+      delete manifest.bin
+      delete manifest.types
+      delete manifest.dependencies
+    })
+    const packageDir = join(root, "packages/public")
+    writeFileSync(join(packageDir, "source.js"), "export const value = 1\n")
+    const dist = join(packageDir, "dist")
+    mkdirSync(dist)
+    writeFileSync(
+      join(dist, "package.json"),
+      JSON.stringify({
+        name: PUBLIC_NAME,
+        version: "1.0.0",
+        type: "module",
+        files: ["index.js", "index.d.ts", "payload.bin"],
+        types: "./index.d.ts",
+        exports: { ".": { types: "./index.d.ts", import: "./index.js" } },
+      }),
+    )
+    writeFileSync(join(dist, "index.js"), "export const value = 1\n")
+    writeFileSync(join(dist, "index.d.ts"), "export declare const value = 1\n")
+    writeFileSync(join(dist, "payload.bin"), randomBytes(16 * 1024))
+
+    const failure = await captureFailure(verifyRepository({ root, noBuild: true, outputDir }))
+
+    expect((failure as Error).message).toContain("exceeds unpacked-size limit")
+    expect((failure as Error).message).toContain(`package=${JSON.stringify(PUBLIC_NAME)}`)
+    expect((failure as Error).message).toContain("maxUnpackedBytes=8192")
+    expect(readdirSync(outputDir)).toEqual([])
+  }, 120_000)
+
   test("builds, packs, checks, publishes, installs, imports, and runs the public bin", async () => {
     const root = installedFixture()
 
