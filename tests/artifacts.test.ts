@@ -305,6 +305,69 @@ describe("npm pack size inspection", () => {
 })
 
 describe("exact tarball gates", () => {
+  // @failure A failed pnpm command loses its command, cwd or captured output at the packing boundary.
+  // @level l1
+  // @consumer release callers diagnosing a failed pnpm process
+  test("preserves the complete nonzero pnpm process failure", async () => {
+    const root = temporaryDirectory()
+    const destination = temporaryDirectory("verify-publishable-tarballs-")
+    const pkg = fixturePackage(root)
+    const binPath = join(root, "pnpm.cjs")
+    writeFileSync(
+      binPath,
+      'process.stdout.write("pack output"); process.stderr.write("pack failed"); process.exit(23)\n',
+    )
+    await expect(
+      packPackage(pkg, {
+        destination,
+        nodePath: process.execPath,
+        pnpm: resolvedTool("pnpm", "pnpm", binPath),
+      }),
+    ).rejects.toThrowError(
+      expect.objectContaining<Partial<CommandFailure>>({
+        name: "CommandFailure",
+        phase: "pnpm-pack:@fixture/package",
+        command: [
+          process.execPath,
+          binPath,
+          "pack",
+          "--json",
+          "--config.ignore-scripts=true",
+          "--pack-destination",
+          destination,
+        ],
+        cwd: root,
+        status: 23,
+        stdout: "pack output",
+        stderr: "pack failed",
+      }),
+    )
+  })
+
+  // @failure Successful pnpm exit with unusable output hides the command and captured stderr.
+  // @level l0
+  // @consumer release callers diagnosing invalid pnpm results
+  test.each(["", "not-json"])("retains complete context for invalid pnpm output %j", async (stdout) => {
+    const root = temporaryDirectory()
+    const destination = temporaryDirectory("verify-publishable-tarballs-")
+    const pkg = fixturePackage(root)
+    const binPath = join(root, "pnpm.cjs")
+    const run: CommandRunner = async () => ({ ...commandResult(stdout), stderr: "pack warning" })
+    const packing = packPackage(pkg, {
+      destination,
+      nodePath: process.execPath,
+      pnpm: resolvedTool("pnpm", "pnpm", binPath),
+      run,
+    })
+    await expect(packing).rejects.toThrow(
+      `command=${JSON.stringify([process.execPath, binPath, "pack", "--json", "--config.ignore-scripts=true", "--pack-destination", destination])}`,
+    )
+    await expect(packing).rejects.toThrow(`cwd=${JSON.stringify(root)}`)
+    await expect(packing).rejects.toThrow(`stdout=${JSON.stringify(stdout)}`)
+    await expect(packing).rejects.toThrow('stderr="pack warning"')
+    await expect(packing).rejects.toThrow(stdout === "" ? "empty stdout" : "malformed JSON")
+  })
+
   test("sees PAX long paths and symlink names in the packed file list", async () => {
     const root = temporaryDirectory()
     const destination = temporaryDirectory("verify-publishable-tarballs-")
@@ -392,14 +455,19 @@ describe("exact tarball gates", () => {
     const run: CommandRunner = async () =>
       commandResult(JSON.stringify({ filename: missing, name: pkg.name, version: pkg.version }))
 
-    await expect(
-      packPackage(pkg, {
-        destination,
-        nodePath: process.execPath,
-        pnpm: resolvedTool("pnpm", "pnpm", join(root, "pnpm.cjs")),
-        run,
-      }),
-    ).rejects.toThrow(/reported tarball is missing.*missing\.tgz/is)
+    const packing = packPackage(pkg, {
+      destination,
+      nodePath: process.execPath,
+      pnpm: resolvedTool("pnpm", "pnpm", join(root, "pnpm.cjs")),
+      run,
+    })
+    await expect(packing).rejects.toThrow(/reported tarball is missing.*missing\.tgz/is)
+    await expect(packing).rejects.toThrow("command=")
+    await expect(packing).rejects.toThrow(`cwd=${JSON.stringify(root)}`)
+    await expect(packing).rejects.toThrow(
+      `stdout=${JSON.stringify(JSON.stringify({ filename: missing, name: pkg.name, version: pkg.version }))}`,
+    )
+    await expect(packing).rejects.toThrow('stderr=""')
   })
 
   test("refuses a packed manifest identity that differs from the discovered package", async () => {

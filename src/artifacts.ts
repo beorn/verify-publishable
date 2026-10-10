@@ -233,12 +233,6 @@ function listTarballs(destination: string, pkg: ArtifactPackage): string[] {
   }
 }
 
-function invalidPnpmResult(pkg: ArtifactPackage, reason: string, stdout: string): Error {
-  return new Error(
-    `invalid pnpm pack --json result: package=${JSON.stringify(pkg.name)} cwd=${JSON.stringify(pkg.dir)}; ${reason}; stdout=${JSON.stringify(stdout)}`,
-  )
-}
-
 function tarString(block: Buffer, offset: number, length: number): string {
   const end = block.indexOf(0, offset)
   return block.subarray(offset, end === -1 || end > offset + length ? offset + length : end).toString("utf8")
@@ -354,80 +348,90 @@ export async function packPackage(
   requireAbsolutePath("nodePath", options.nodePath)
   requireAbsolutePath("pnpm.binPath", options.pnpm.binPath)
 
+  const args = [
+    options.pnpm.binPath,
+    "pack",
+    "--json",
+    "--config.ignore-scripts=true",
+    "--pack-destination",
+    options.destination,
+  ]
   const before = new Set(listTarballs(options.destination, pkg))
   const result = await (options.run ?? runCommand)({
     phase: `pnpm-pack:${pkg.name}`,
     command: options.nodePath,
-    args: [
-      options.pnpm.binPath,
-      "pack",
-      "--json",
-      "--config.ignore-scripts=true",
-      "--pack-destination",
-      options.destination,
-    ],
+    args,
     cwd: pkg.dir,
   })
-  if (result.stdout.trim() === "") throw invalidPnpmResult(pkg, "empty stdout", result.stdout)
-
-  let parsed: unknown
   try {
-    parsed = JSON.parse(result.stdout)
-  } catch {
-    throw invalidPnpmResult(pkg, "malformed JSON", result.stdout)
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw invalidPnpmResult(pkg, "result must be an object", result.stdout)
-  }
-  const { filename, name, version } = parsed as Record<string, unknown>
-  if (name !== pkg.name || version !== pkg.version) {
-    throw new Error(
-      `packed manifest identity mismatch: actual=${JSON.stringify({ name, version })} expected=${JSON.stringify({ name: pkg.name, version: pkg.version })} cwd=${JSON.stringify(pkg.dir)}`,
-    )
-  }
-  if (typeof filename !== "string" || !isAbsolute(filename)) {
-    throw invalidPnpmResult(pkg, `filename must be an absolute path: actual=${JSON.stringify(filename)}`, result.stdout)
-  }
+    if (result.stdout.trim() === "") throw new Error("invalid pnpm pack --json result: empty stdout")
 
-  const destination = resolve(options.destination)
-  const tarballPath = resolve(filename)
-  if (!pathIsInside(destination, tarballPath)) {
-    throw new Error(
-      `pnpm pack reported a tarball outside its destination: package=${JSON.stringify(pkg.name)} destination=${JSON.stringify(destination)} tarballPath=${JSON.stringify(tarballPath)}`,
-    )
-  }
-  if (!tarballPath.endsWith(".tgz")) {
-    throw new Error(
-      `pnpm pack reported a non-tarball path: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)}`,
-    )
-  }
-  if (!existsSync(tarballPath) || !statSync(tarballPath).isFile()) {
-    throw new Error(
-      `pnpm pack reported tarball is missing: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)}`,
-    )
-  }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(result.stdout)
+    } catch {
+      throw new Error("invalid pnpm pack --json result: malformed JSON")
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("invalid pnpm pack --json result: result must be an object")
+    }
+    const { filename, name, version } = parsed as Record<string, unknown>
+    if (name !== pkg.name || version !== pkg.version) {
+      throw new Error(
+        `packed manifest identity mismatch: actual=${JSON.stringify({ name, version })} expected=${JSON.stringify({ name: pkg.name, version: pkg.version })} cwd=${JSON.stringify(pkg.dir)}`,
+      )
+    }
+    if (typeof filename !== "string" || !isAbsolute(filename)) {
+      throw new Error(
+        `invalid pnpm pack --json result: filename must be an absolute path: actual=${JSON.stringify(filename)}`,
+      )
+    }
 
-  const added = listTarballs(destination, pkg).filter((path) => !before.has(path))
-  if (added.length !== 1) {
-    throw new Error(
-      `pnpm pack expected exactly one new .tgz: package=${JSON.stringify(pkg.name)} destination=${JSON.stringify(destination)} actual=${added.length} added=${JSON.stringify(added)}`,
-    )
-  }
-  if (added[0] !== tarballPath) {
-    throw new Error(
-      `pnpm pack output disagrees with created tarball: package=${JSON.stringify(pkg.name)} reported=${JSON.stringify(tarballPath)} created=${JSON.stringify(added[0])}`,
-    )
-  }
+    const destination = resolve(options.destination)
+    const tarballPath = resolve(filename)
+    if (!pathIsInside(destination, tarballPath)) {
+      throw new Error(
+        `pnpm pack reported a tarball outside its destination: package=${JSON.stringify(pkg.name)} destination=${JSON.stringify(destination)} tarballPath=${JSON.stringify(tarballPath)}`,
+      )
+    }
+    if (!tarballPath.endsWith(".tgz")) {
+      throw new Error(
+        `pnpm pack reported a non-tarball path: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)}`,
+      )
+    }
+    if (!existsSync(tarballPath) || !statSync(tarballPath).isFile()) {
+      throw new Error(
+        `pnpm pack reported tarball is missing: package=${JSON.stringify(pkg.name)} tarballPath=${JSON.stringify(tarballPath)}`,
+      )
+    }
 
-  const artifact = packedArtifact(pkg, tarballPath)
-  const manifest = artifact.manifest
-  if (manifest.name !== pkg.name || manifest.version !== pkg.version) {
+    const added = listTarballs(destination, pkg).filter((path) => !before.has(path))
+    if (added.length !== 1) {
+      throw new Error(
+        `pnpm pack expected exactly one new .tgz: package=${JSON.stringify(pkg.name)} destination=${JSON.stringify(destination)} actual=${added.length} added=${JSON.stringify(added)}`,
+      )
+    }
+    if (added[0] !== tarballPath) {
+      throw new Error(
+        `pnpm pack output disagrees with created tarball: package=${JSON.stringify(pkg.name)} reported=${JSON.stringify(tarballPath)} created=${JSON.stringify(added[0])}`,
+      )
+    }
+
+    const artifact = packedArtifact(pkg, tarballPath)
+    const manifest = artifact.manifest
+    if (manifest.name !== pkg.name || manifest.version !== pkg.version) {
+      throw new Error(
+        `packed tarball manifest identity mismatch: actual=${JSON.stringify({ name: manifest.name, version: manifest.version })} expected=${JSON.stringify({ name: pkg.name, version: pkg.version })} tarballPath=${JSON.stringify(tarballPath)}`,
+      )
+    }
+
+    return { name: pkg.name, tarballPath, version: pkg.version, artifact }
+  } catch (error) {
     throw new Error(
-      `packed tarball manifest identity mismatch: actual=${JSON.stringify({ name: manifest.name, version: manifest.version })} expected=${JSON.stringify({ name: pkg.name, version: pkg.version })} tarballPath=${JSON.stringify(tarballPath)}`,
+      `pnpm pack artifact validation failed: package=${JSON.stringify(pkg.name)} command=${JSON.stringify([options.nodePath, ...args])} cwd=${JSON.stringify(pkg.dir)} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}; cause=${String(error)}`,
+      { cause: error },
     )
   }
-
-  return { name: pkg.name, tarballPath, version: pkg.version, artifact }
 }
 
 export async function runTarballChecks(
