@@ -71,6 +71,8 @@ export function exportContract(
 ): {
   classification?: "bin-only"
   moduleSubpaths: string[]
+  /** Literal subpaths whose every export target is a relative .json file. Still imported, with a JSON import attribute. */
+  jsonSubpaths: string[]
   assetSubpaths: string[]
   assetTargets: string[]
 } {
@@ -91,7 +93,7 @@ export function exportContract(
     ["exports", "main", "module", "browser", "types", "typings"].every((field) => manifest[field] === undefined) &&
     ![...entries].some((path) => path.startsWith("index."))
   ) {
-    return { classification: "bin-only", moduleSubpaths: [], assetSubpaths: [], assetTargets: [] }
+    return { classification: "bin-only", moduleSubpaths: [], jsonSubpaths: [], assetSubpaths: [], assetTargets: [] }
   }
   const raw = manifest.exports
   const subpaths: Array<[string, unknown]> =
@@ -102,18 +104,25 @@ export function exportContract(
       ? Object.entries(raw).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       : [[".", raw]]
   const moduleSubpaths: string[] = []
+  const jsonSubpaths: string[] = []
   const assetSubpaths: string[] = []
   const assetTargets = new Set<string>()
   const cssTarget = (target: string): boolean =>
     target.startsWith("./") && target.endsWith(".css") && !target.includes("*")
+  const jsonTarget = (target: string): boolean =>
+    target.startsWith("./") && target.endsWith(".json") && !target.includes("*")
   for (const [subpath, value] of subpaths) {
     if (subpath.includes("*") || (subpath !== "." && (!subpath.startsWith("./") || subpath.length <= 2))) continue
     const targets = exportEntries("exports", value).map(({ target }) => target)
     for (const target of targets) if (cssTarget(target)) assetTargets.add(target)
     if (targets.length > 0 && targets.every(cssTarget)) assetSubpaths.push(subpath)
-    else moduleSubpaths.push(subpath)
+    else {
+      moduleSubpaths.push(subpath)
+      // The subpath name is not evidence: ./package.json can point at JS, and ./meta can point at JSON.
+      if (targets.length > 0 && targets.every(jsonTarget)) jsonSubpaths.push(subpath)
+    }
   }
-  return { moduleSubpaths, assetSubpaths, assetTargets: [...assetTargets].sort() }
+  return { moduleSubpaths, jsonSubpaths, assetSubpaths, assetTargets: [...assetTargets].sort() }
 }
 
 /** Enumerate every file target without claiming a wildcard pattern names one particular file. */

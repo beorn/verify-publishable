@@ -271,6 +271,26 @@ export function literalSpecifiers(packageName: string, exportsField: unknown): s
   )
 }
 
+/** One fresh-consumer import. `with` is set only when every export target of that subpath is JSON. */
+export interface ConsumerImport {
+  specifier: string
+  with?: { type: "json" }
+}
+
+export function consumerImports(
+  packageName: string,
+  contract: { moduleSubpaths: string[]; jsonSubpaths?: readonly string[] },
+): ConsumerImport[] {
+  const json = new Set(contract.jsonSubpaths ?? [])
+  return contract.moduleSubpaths.map((subpath) => {
+    const specifier = subpath === "." ? packageName : `${packageName}/${subpath.slice(2)}`
+    return json.has(subpath) ? { specifier, with: { type: "json" } } : { specifier }
+  })
+}
+
+/** Eval body the fresh-consumer probe runs under Node and Bun. Plans are JSON on argv[1]. */
+export const CONSUMER_IMPORT_EVAL = `const plans = JSON.parse(process.argv[1]);\nfor (const plan of plans) {\n  try {\n    await import(plan.specifier, plan.with ? { with: plan.with } : undefined);\n  } catch (error) {\n    console.error(plan.specifier + ": " + (error?.stack ?? String(error)));\n    process.exit(1);\n  }\n}`
+
 function declaredBins(packageName: string, rawBin: PackageManifest["bin"]): Array<[string, string]> {
   if (rawBin === undefined) return []
   if (typeof rawBin === "string") return [[packageName.split("/").at(-1)!, rawBin]]
@@ -665,8 +685,11 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
       }
     }
 
-    const importScript = `const specifiers = JSON.parse(process.argv[1]);\nfor (const specifier of specifiers) {\n  try {\n    await import(specifier);\n  } catch (error) {\n    console.error(specifier + ": " + (error?.stack ?? String(error)));\n    process.exit(1);\n  }\n}`
-    for (const probe of specifiers.length === 0 ? [] : runtimes) {
+    const importPlans =
+      options.payload === undefined
+        ? consumerImports(identity.name, contract)
+        : consumerImports(identity.name, options.payload)
+    for (const probe of importPlans.length === 0 ? [] : runtimes) {
       for (const mode of ["development", "production"] as const) {
         await runProbe({
           // Node's phase names are unchanged; a Bun probe says so in its phase.
@@ -674,8 +697,8 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
           command: probe.command,
           args:
             probe.runtime === "node"
-              ? ["--input-type=module", "--eval", importScript, JSON.stringify(specifiers)]
-              : ["--eval", importScript, JSON.stringify(specifiers)],
+              ? ["--input-type=module", "--eval", CONSUMER_IMPORT_EVAL, JSON.stringify(importPlans)]
+              : ["--eval", CONSUMER_IMPORT_EVAL, JSON.stringify(importPlans)],
           cwd: consumerRoot,
           env: { ...probe.env, NODE_ENV: mode },
         })
