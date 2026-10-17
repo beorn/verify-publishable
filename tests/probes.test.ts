@@ -851,6 +851,7 @@ describe("bin-only installed runtime contracts", () => {
       payload: {
         classification: "bin-only",
         moduleSubpaths: [],
+        jsonSubpaths: [],
         assetSubpaths: [],
         assetTargets: [],
         rawPlugin: false,
