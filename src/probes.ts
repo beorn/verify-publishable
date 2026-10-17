@@ -279,9 +279,9 @@ export interface ConsumerImport {
 
 export function consumerImports(
   packageName: string,
-  contract: { moduleSubpaths: string[]; jsonSubpaths?: readonly string[] },
+  contract: { moduleSubpaths: string[]; jsonSubpaths: readonly string[] },
 ): ConsumerImport[] {
-  const json = new Set(contract.jsonSubpaths ?? [])
+  const json = new Set(contract.jsonSubpaths)
   return contract.moduleSubpaths.map((subpath) => {
     const specifier = subpath === "." ? packageName : `${packageName}/${subpath.slice(2)}`
     return json.has(subpath) ? { specifier, with: { type: "json" } } : { specifier }
