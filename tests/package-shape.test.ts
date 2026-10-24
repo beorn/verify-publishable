@@ -31,7 +31,7 @@ describe("Git dependency package shape", () => {
       "@arethetypeswrong/cli": "0.18.5",
       pnpm: "9.15.9",
       publint: "0.3.24",
-      verdaccio: "6.10.2",
+      verdaccio: "6.10.7",
     })
     expect(manifest.files).toEqual(["bin", "src", "dist", "LICENSE", "README.md"])
     // dist is built by prepack; every other listed path is checked in.
