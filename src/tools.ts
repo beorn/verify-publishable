@@ -15,7 +15,7 @@ export interface ResolvedTool {
 }
 
 export const TOOL_SPECS = {
-  verdaccio: { packageName: "verdaccio", expectedVersion: "6.10.2", binName: "verdaccio" },
+  verdaccio: { packageName: "verdaccio", expectedVersion: "6.10.7", binName: "verdaccio" },
   pnpm: { packageName: "pnpm", expectedVersion: "9.15.9", binName: "pnpm" },
   attw: { packageName: "@arethetypeswrong/cli", expectedVersion: "0.18.5", binName: "attw" },
   publint: { packageName: "publint", expectedVersion: "0.3.24", binName: "publint" },
