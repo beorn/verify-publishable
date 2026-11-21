@@ -5,6 +5,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 import type { DiscoveredPackage, PackageManifest } from "./discovery.ts"
 import type { PayloadVerification } from "./artifacts.ts"
 import { exportContract, validBinName } from "./pack-shape.ts"
+import { DEFAULT_NODE_RANGE, nodeEngineRange } from "./preflight.ts"
 import { CommandFailure, runCommand, type CommandResult, type CommandSpec } from "./process.ts"
 import {
   binRuntimePlan,
@@ -554,8 +555,10 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
     cwd: sourceRoot,
     env: npmEnvironment,
   })
-  if (!/^v24(?:\.|$)/.test(versionResult.stdout.trim())) {
-    const diagnostic = `expected Node 24 from nodePath=${options.nodePath}; received=${JSON.stringify(versionResult.stdout.trim())}`
+  const nodeVersion = versionResult.stdout.trim()
+  const range = nodeEngineRange(options.packedManifest.engines) ?? DEFAULT_NODE_RANGE
+  if (!Bun.semver.satisfies(nodeVersion, range)) {
+    const diagnostic = `expected Node ${range} from nodePath=${options.nodePath}; received=${JSON.stringify(nodeVersion)}`
     throw new ProbeFailure({
       phase: "node-version",
       packageName: identity.name,
@@ -567,7 +570,6 @@ export async function probeFreshConsumer(options: FreshConsumerOptions): Promise
       stderr: versionResult.stderr === "" ? diagnostic : `${versionResult.stderr.replace(/\n$/, "")}\n${diagnostic}`,
     })
   }
-  const nodeVersion = versionResult.stdout.trim()
   const consumerRoot = await mkdtemp(join(tmpdir(), "verify-publishable-consumer-"))
 
   const run = async (): Promise<FreshConsumerResult> => {

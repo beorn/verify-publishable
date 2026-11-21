@@ -8,6 +8,43 @@ function result(stdout: string): CommandResult {
 }
 
 describe("host preflight", () => {
+  test("selects a supplied Node for the package range, in PATH order", async () => {
+    const run = vi.fn(async (spec: CommandSpec) => {
+      if (spec.args?.[0] !== "--version") return result("11.6.2\n")
+      return result(spec.command === "/node24/node" ? "v24.18.1\n" : "v26.13.1\n")
+    })
+
+    await expect(
+      resolveHostTools(
+        "/fixture",
+        {
+          which: (name) => `/tools/${name}`,
+          nodeCandidates: () => ["/node24/node", "/node26/node"],
+          run,
+        },
+        { packageName: "@hallohuman/hightea-ahp-host", range: ">=26.13.1" },
+      ),
+    ).resolves.toMatchObject({
+      nodePath: "/node26/node",
+      nodeVersion: "v26.13.1",
+      nodeSelectionReason: "engines.node >=26.13.1",
+    })
+    expect(run.mock.calls[2]?.[0].command).toBe("/node26/node")
+  })
+
+  test("names the package, range, and available versions when no Node qualifies", async () => {
+    await expect(
+      resolveHostTools(
+        "/fixture",
+        {
+          nodeCandidates: () => ["/node24/node", "/node26/node"],
+          run: async ({ command }) => result(command === "/node24/node" ? "v24.18.1\n" : "v26.13.1\n"),
+        },
+        { packageName: "@fixture/next", range: ">=27" },
+      ),
+    ).rejects.toThrow(/NODE_VERSION_UNSUPPORTED.*@fixture\/next.*>=27.*v24\.18\.1.*v26\.13\.1/)
+  })
+
   /**
    * @failure The gate runs its import probes under a different Node major than CI/release,
    * giving environment-dependent package verdicts.
@@ -66,6 +103,7 @@ describe("host preflight", () => {
       nodePath: "/tools/node",
       bunPath: "/tools/bun",
       nodeVersion: "v24.18.1",
+      nodeSelectionReason: "no engines range declared; default Node 24",
       npmPath: "/tools/npm",
       npmVersion: "11.6.2",
     })

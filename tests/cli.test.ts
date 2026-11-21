@@ -210,6 +210,7 @@ describe("CLI result contract", () => {
           binRuntimes: [],
           consumerCheckRan: false,
           runtimes: [{ runtime: "node" as const, version: "v24.0.0", reason: "engines declares no runtime" }],
+          nodeSelectionReason: "no engines range declared; default Node 24",
         },
       ],
     }))
@@ -250,6 +251,7 @@ describe("CLI result contract", () => {
           binRuntimes: [],
           consumerCheckRan: false,
           runtimes: [{ runtime: "node" as const, version: "v24.0.0", reason: "engines declares no runtime" }],
+          nodeSelectionReason: "no engines range declared; default Node 24",
         },
       ],
     }))

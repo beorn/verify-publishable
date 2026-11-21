@@ -24,8 +24,8 @@ function declaredEngines(engines: unknown): { node: boolean; bun: boolean; prese
 }
 
 /**
- * The runtimes a manifest promises, from its engines: node alone keeps Node 24, bun alone is probed under Bun, both
- * are both probed, and neither keeps Node 24. A probe proves a promise the manifest makes, never one it does not.
+ * The runtimes a manifest promises. Node uses its declared version range or the default when absent.
+ * A Bun-only package is probed under Bun, and a package declaring both is probed under both.
  */
 export function probeRuntimesFor(engines: unknown): Array<{ runtime: ProbeRuntimeName; reason: string }> {
   const { node, bun } = declaredEngines(engines)

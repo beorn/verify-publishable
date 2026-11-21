@@ -190,6 +190,7 @@ describe("real repository verification", () => {
         ],
         consumerCheckRan: false,
         runtimes: [{ runtime: "node", version: result.nodeVersion, reason: "engines declares node only" }],
+        nodeSelectionReason: "engines.node >=24 <25",
         assets: [],
         moduleChecks: { action: "run", reason: "package promises module entrypoints" },
       },
@@ -253,8 +254,12 @@ describe("real repository verification", () => {
    */
   test("rejects incompatible installed engines even with inherited npm force", async () => {
     const root = installedFixture()
+    const internalManifestPath = join(root, "packages/internal/package.json")
+    const internalManifest = JSON.parse(readFileSync(internalManifestPath, "utf8"))
+    internalManifest.engines = { node: ">=999" }
+    writeFileSync(internalManifestPath, `${JSON.stringify(internalManifest, null, 2)}\n`)
     updatePublicManifest(root, (manifest) => {
-      manifest.engines = { node: ">=25" }
+      manifest.engines = { node: ">=24 <25" }
     })
     const prior = process.env.npm_config_force
     process.env.npm_config_force = "true"
@@ -268,7 +273,7 @@ describe("real repository verification", () => {
     expect(failure).toBeInstanceOf(ProbeFailure)
     expect(failure).toMatchObject({ phase: "consumer-install", packageName: PUBLIC_NAME, status: 1 })
     expect(commandDiagnostic(failure as ProbeFailure)).toMatch(/EBADENGINE/)
-    expect(commandDiagnostic(failure as ProbeFailure)).toContain(">=25")
+    expect(commandDiagnostic(failure as ProbeFailure)).toContain(">=999")
     expect(existsSync((failure as ProbeFailure).cwd)).toBe(false)
   }, 120_000)
 

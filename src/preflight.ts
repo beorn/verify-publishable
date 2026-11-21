@@ -1,31 +1,42 @@
 import { accessSync, constants, existsSync, realpathSync } from "node:fs"
-import { delimiter, isAbsolute, join } from "node:path"
+import { delimiter, dirname, isAbsolute, join } from "node:path"
 
 import type { CommandResult, CommandSpec } from "./process.ts"
 import { runCommand } from "./process.ts"
+
+export const DEFAULT_NODE_RANGE = "24"
+
+export function nodeEngineRange(engines: unknown): string | undefined {
+  if (engines === null || typeof engines !== "object" || !("node" in engines)) return undefined
+  if (typeof engines.node !== "string") {
+    throw new Error(`NODE_ENGINE_INVALID: expected an npm version range; received=${JSON.stringify(engines.node)}`)
+  }
+  return engines.node
+}
 
 export interface HostTools {
   nodePath: string
   /** Resolved like nodePath, but optional: only a package whose engines declare bun needs it, and its probe refuses by name. */
   bunPath: string | null
   nodeVersion: string
+  nodeSelectionReason: string
   npmPath: string
   npmVersion: string
 }
 
 export interface HostToolDependencies {
   which: (name: string) => string | null
+  nodeCandidates: () => readonly string[]
   run: (spec: CommandSpec) => Promise<CommandResult>
 }
 
-function requiredPath(name: "node" | "npm", which: HostToolDependencies["which"]): string {
-  const path = which(name)
+function requiredPath(name: "node" | "npm", path: string | null): string {
   if (path === null) throw new Error(`HOST_TOOL_MISSING: tool=${name} searched=PATH`)
   if (!isAbsolute(path)) throw new Error(`HOST_TOOL_INVALID: tool=${name} expected=absolute-path actual=${path}`)
   return path
 }
 
-export function findHostExecutable(name: "node" | "npm" | "bun", env: NodeJS.ProcessEnv = process.env): string | null {
+function* hostExecutables(name: "node" | "npm" | "bun", env: NodeJS.ProcessEnv): Generator<string> {
   const bunPath = realpathSync(process.execPath)
   const executable = process.platform === "win32" ? `${name}.exe` : name
   for (const directory of (env.PATH ?? "").split(delimiter)) {
@@ -40,8 +51,12 @@ export function findHostExecutable(name: "node" | "npm" | "bun", env: NodeJS.Pro
       throw new Error(`HOST_TOOL_INACCESSIBLE: tool=${name} path=${candidate} cause=${String(error)}`)
     }
     if (name === "node" && canonical === bunPath) continue
-    return canonical
+    yield canonical
   }
+}
+
+export function findHostExecutable(name: "node" | "npm" | "bun", env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const path of hostExecutables(name, env)) return path
   return null
 }
 
@@ -56,17 +71,44 @@ function singleLineVersion(tool: string, stdout: string): string {
 export async function resolveHostTools(
   cwd: string,
   dependencies: Partial<HostToolDependencies> = {},
+  requirement?: { packageName: string; range?: string },
 ): Promise<HostTools> {
   const which = dependencies.which ?? ((name: string) => findHostExecutable(name as "node" | "npm" | "bun"))
   const run = dependencies.run ?? runCommand
-  const nodePath = requiredPath("node", which)
-  const nodeResult = await run({ phase: "preflight", command: nodePath, args: ["--version"], cwd, timeoutMs: 10_000 })
-  const nodeVersion = singleLineVersion("node", nodeResult.stdout)
-  const match = /^v(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(nodeVersion)
-  if (match === null) throw new Error(`NODE_VERSION_INVALID: expected=v<major>.<minor>.<patch> actual=${nodeVersion}`)
-  if (match[1] !== "24") throw new Error(`NODE_VERSION_UNSUPPORTED: required=24 actual=${nodeVersion}`)
+  const candidates =
+    dependencies.nodeCandidates?.() ??
+    (dependencies.which === undefined ? hostExecutables("node", process.env) : [requiredPath("node", which("node"))])
+  const range = requirement?.range ?? DEFAULT_NODE_RANGE
+  const available: string[] = []
+  const seen = new Set<string>()
+  let selected: { nodePath: string; nodeVersion: string } | undefined
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue
+    seen.add(candidate)
+    const nodePath = requiredPath("node", candidate)
+    const result = await run({ phase: "preflight", command: nodePath, args: ["--version"], cwd, timeoutMs: 10_000 })
+    const nodeVersion = singleLineVersion("node", result.stdout)
+    if (!/^v\d+\.\d+\.\d+(?:[-+].*)?$/.test(nodeVersion)) {
+      throw new Error(`NODE_VERSION_INVALID: path=${nodePath} expected=v<major>.<minor>.<patch> actual=${nodeVersion}`)
+    }
+    available.push(nodeVersion)
+    if (Bun.semver.satisfies(nodeVersion, range)) {
+      selected = { nodePath, nodeVersion }
+      break
+    }
+  }
+  if (selected === undefined) {
+    if (available.length === 0) throw new Error(`HOST_TOOL_MISSING: tool=node searched=PATH required=${range}`)
+    throw new Error(
+      `NODE_VERSION_UNSUPPORTED: package=${requirement?.packageName ?? "host"} required=${range} actual=${available[0]} available=${JSON.stringify(available)} searched=PATH`,
+    )
+  }
+  const { nodePath, nodeVersion } = selected
+  const nodeSelectionReason =
+    requirement?.range === undefined ? "no engines range declared; default Node 24" : `engines.node ${range}`
 
-  const npmPath = requiredPath("npm", which)
+  const adjacentNpm = dependencies.which === undefined ? findHostExecutable("npm", { PATH: dirname(nodePath) }) : null
+  const npmPath = requiredPath("npm", adjacentNpm ?? which("npm"))
   const npmResult = await run({
     phase: "preflight",
     command: nodePath,
@@ -84,5 +126,5 @@ export async function resolveHostTools(
     throw new Error(`HOST_TOOL_INVALID: tool=bun expected=absolute-path actual=${bunPath}`)
   }
 
-  return { nodePath, bunPath, nodeVersion, npmPath, npmVersion }
+  return { nodePath, bunPath, nodeVersion, nodeSelectionReason, npmPath, npmVersion }
 }
