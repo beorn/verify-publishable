@@ -691,6 +691,14 @@ describe("probe runtimes follow the manifest's engines", () => {
     expect(readFileSync(fixture.binLog, "utf8")).toBe("--help\n--help\n")
   })
 
+  test("a package requiring Node 26 installs strictly and runs under Node 26", async () => {
+    const fixture = fakeNpm({ engines: { node: ">=26.13.1" }, nodeVersion: "v26.13.1" })
+    const result = await probe(fixture)
+
+    expect(result.runtimes).toEqual([{ runtime: "node", version: "v26.13.1", reason: "engines declares node only" }])
+    expect(readFileSync(fixture.commandLog, "utf8")).toContain("--engine-strict")
+  })
+
   test("a package declaring no engines keeps the Node probe, as before", async () => {
     const fixture = fakeNpm()
     const bun = fakeBun()

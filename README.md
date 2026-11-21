@@ -1,6 +1,6 @@
 # verify-publishable
 
-`verify-publishable` is a fail-loud release gate for Bun repositories. It builds the repository, packs the exact npm artifacts, checks their metadata and types, publishes the whole local dependency closure to an isolated Verdaccio registry, and installs every public package into a fresh consumer under Node 24.
+`verify-publishable` is a fail-loud release gate for Bun repositories. It builds the repository, packs the exact npm artifacts, checks their metadata and types, publishes the whole local dependency closure to an isolated Verdaccio registry, and installs every public package into a fresh consumer under a Node version selected for that package.
 
 ## Run it in GitHub Actions
 
@@ -33,7 +33,7 @@ Outside Actions, run the bin from a checkout of this repository after `bun insta
 /path/to/verify-publishable/bin/verify-publishable --output-dir <directory>
 ```
 
-The host must provide Bun, Node 24, and npm. The gate uses only its declared, pinned copies of pnpm, Verdaccio, Publint, and `@arethetypeswrong/cli`. Linux and macOS are supported.
+The host must provide Bun, npm, and a Node executable on `PATH` for each public package's `engines.node` range. The first matching Node in `PATH` order wins. Packages without that range use Node 24. The gate reports the selection reason for each package and lists the available versions when no Node matches. The gate uses its declared, pinned copies of pnpm, Verdaccio, Publint, and `@arethetypeswrong/cli`. Linux and macOS are supported.
 
 ## Repository contract
 

@@ -15,7 +15,7 @@ import {
 import { executeBuild, readLiveOutputLoss, type BuildMode, type LiveOutputLoss } from "./build.ts"
 import { discoverRepository, type PackageManifest } from "./discovery.ts"
 import { assertPackShape } from "./pack-shape.ts"
-import { resolveHostTools } from "./preflight.ts"
+import { nodeEngineRange, resolveHostTools, type HostTools } from "./preflight.ts"
 import { probeFreshConsumer, type ProbeRuntime } from "./probes.ts"
 import type { BinRuntimeRow } from "./runtime.ts"
 import { publishTarballs } from "./publish.ts"
@@ -47,6 +47,7 @@ export interface VerifiedPackageResult {
   consumerCheckRan: boolean
   /** The runtimes the consumer probes ran under, each with its version and the engines reason that selected it. */
   runtimes: ProbeRuntime[]
+  nodeSelectionReason: string
   assets?: PayloadVerification["assets"]
   moduleChecks?: PayloadVerification["moduleChecks"]
 }
@@ -175,7 +176,19 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
   }
   const outputDir = options.outputDir === undefined ? undefined : await requireEmptyOutputDirectory(options.outputDir)
   const repository = await discoverRepository(root)
-  const host = await resolveHostTools(root)
+  const hostByRange = new Map<string | undefined, HostTools>()
+  const hostFor = async (manifest: PackageManifest): Promise<HostTools> => {
+    const range = nodeEngineRange(manifest.engines)
+    let host = hostByRange.get(range)
+    if (host === undefined) {
+      host = await resolveHostTools(root, {}, { packageName: manifest.name, ...(range === undefined ? {} : { range }) })
+      hostByRange.set(range, host)
+    }
+    return host
+  }
+  // Discovery requires at least one public package. Use its Node for shared packing and the registry.
+  const host = await hostFor(repository.publicPackages[0]!.manifest)
+  for (const pkg of repository.publicPackages.slice(1)) await hostFor(pkg.manifest)
   const selfRoot = findSelfPackageRoot(fileURLToPath(import.meta.url))
   const tools = {
     pnpm: resolveOwnedBin(selfRoot, TOOL_SPECS.pnpm),
@@ -299,15 +312,17 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
       const payload = payloads.get(pkg.name)
       if (payload === undefined) throw new Error(`ASSET_PROOF_MISSING: package=${pkg.name} queried=packed-packages`)
       const bunOnlyBins = repository.config.bunOnlyBins?.filter((declaration) => declaration.package === pkg.name)
+      const packedManifest = tarball.artifact.manifest as PackageManifest
+      const consumerHost = await hostFor(packedManifest)
       const probe = await probeFreshConsumer({
         package: pkg,
-        packedManifest: tarball.artifact.manifest as PackageManifest,
+        packedManifest,
         payload,
         registryUrl: registry.url,
         npmrcPath,
-        nodePath: host.nodePath,
-        ...(host.bunPath === null ? {} : { bunPath: host.bunPath }),
-        npmPath: host.npmPath,
+        nodePath: consumerHost.nodePath,
+        ...(consumerHost.bunPath === null ? {} : { bunPath: consumerHost.bunPath }),
+        npmPath: consumerHost.npmPath,
         sourceRoot: root,
         abortSignal: registry.abortSignal,
         ...(consumerCheck === undefined ? {} : { consumerCheck }),
@@ -328,6 +343,7 @@ export async function verifyRepository(options: VerifyRepositoryOptions): Promis
         binRuntimes: probe.binRuntimes,
         consumerCheckRan: probe.consumerCheckRan,
         runtimes: probe.runtimes,
+        nodeSelectionReason: consumerHost.nodeSelectionReason,
         assets: payload.assets,
         moduleChecks: payload.moduleChecks,
       })
